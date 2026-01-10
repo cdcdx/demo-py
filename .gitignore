@@ -1,0 +1,21 @@
+.pytype/
+.idea/
+.vscode/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+# Environments
+.env
+.venv/
+venv/
+
+# Project
+.backup/
+backup/
+
+docs/
+demo/
+*.log
+*.txt
+*.sqlite

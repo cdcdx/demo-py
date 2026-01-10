@@ -1,0 +1,52 @@
+# 后台
+
+## 功能
+- admin.py [ok]
+  - register_code/list
+  - register_code/generate
+  - register_code/history
+  - test/login/uid
+- auth.py [ok]
+  - regiter
+  - login
+  - forget-passward
+  - reset-passward
+  - change-password
+  - change-username
+  - change-email
+  - session
+- third.py [ok]
+  - google/auth
+  - google/callback
+  - google/bind
+  - twitter/connect
+  - twitter/callback
+  - discord/connect
+  - discord/callback
+- validate.py [ok]
+  - token
+  - username
+  - email
+  - address
+  - registercode
+- feedback.py
+  - submit
+  - list
+- health.py
+  - info
+
+## 模块
+- [ok]UVICORN
+- [ok]BLACKLIST/BLACKIP
+- [ok]JWT
+- [ok]CAPTCHA : TURNSTILE / reCAPTCHA / hCAPTCHA
+- [ok]GOOGLE AUTH : GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET
+- [ok]Twitter authorize/Follow : TWITTER_CONSUMER_KEY / TWITTER_CONSUMER_SECRET
+- [ok]Discord authorize/join : DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET
+- [ok]EMAIL : SMTP / AWS-SES
+- [  ]Message : email / SMS / telegram
+- [ok]SQL : sqlite / mysql / postgresql
+- [ok]REDIS : redis
+- [ok]KAFKA : kafka
+- [  ]AI : openai / aliyun
+- [  ]多语言切换：i18n
