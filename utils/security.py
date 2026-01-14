@@ -57,13 +57,13 @@ async def get_current_userid(authorization: HTTPAuthorizationCredentials = Depen
                 raise credentials_exception
             existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
             logger.debug(f"existing_user: {existing_user}")
-            mysql_user_passwd = existing_user['password']
-            db_secret = md58(mysql_user_passwd)
+            sql_user_passwd = existing_user['password']
+            db_secret = md58(sql_user_passwd)
             logger.debug(f"mysql sql.secret: {db_secret} jwt.secret: {jwt_secret}")
             if db_secret != jwt_secret:
                 raise credentials_exception
             # redis 设置
-            await set_redis_data(f"box:{userid}:pwd", value=mysql_user_passwd, ex=JWT_CONFIG['expire'])
+            await set_redis_data(f"box:{userid}:pwd", value=sql_user_passwd, ex=JWT_CONFIG['expire'])
         else:
             db_secret = md58(redis_user_passwd)
             logger.debug(f"redis redis.secret: {db_secret} jwt.secret: {jwt_secret}")

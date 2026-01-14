@@ -69,11 +69,11 @@ async def register(post_request: AuthRegiterRequest, background_tasks: Backgroun
         logger.error(f"STATUS: 401 ERROR: Invalid captcha")
         return {"code": 401, "success": False, "msg": get_text('INVALID_CAPTCHA')}
 
-    ## 屏蔽用户多次请求 10
-    redis_pending_withdraw = await get_redis_data(f"pending:{email}:register")
-    if redis_pending_withdraw:
+    ## 屏蔽用户多次请求 60
+    redis_pending = await get_redis_data(f"pending:{email}:register")
+    if redis_pending:
         return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
-    await set_redis_data(f"pending:{email}:register", value=1, ex=10)
+    await set_redis_data(f"pending:{email}:register", value=1, ex=60)
 
     try:
         register_code = post_request.register_code
@@ -870,11 +870,11 @@ async def send_verifyemail(background_tasks: BackgroundTasks, userid: Dict = Dep
         return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
 
     try:
-        ## 屏蔽用户多次请求 10
-        redis_pending_complete = await get_redis_data(f"pending:{userid}:send:verifyemail")
-        if redis_pending_complete:
+        ## 屏蔽用户多次请求 60
+        redis_pending = await get_redis_data(f"pending:{userid}:send:verifyemail")
+        if redis_pending:
             return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
-        await set_redis_data(f"pending:{userid}:send:verifyemail", value=1, ex=10)
+        await set_redis_data(f"pending:{userid}:send:verifyemail", value=1, ex=60)
 
         ## 根据 userid 查询是否已验证
         check_query = "SELECT email,username,password,state FROM wenda_users WHERE userid = %s"
@@ -967,11 +967,11 @@ async def bind_address(post_request: BindAddressRequest, userid: Dict = Depends(
         return {"code": 401, "success": False, "msg": "No wallet address"}
 
     try:
-        ## 屏蔽用户多次请求 10
-        redis_pending_complete = await get_redis_data(f"pending:{userid}:bind:address")
-        if redis_pending_complete:
+        ## 屏蔽用户多次请求 60
+        redis_pending = await get_redis_data(f"pending:{userid}:bind:address")
+        if redis_pending:
             return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
-        await set_redis_data(f"pending:{userid}:bind:address", value=1, ex=10)
+        await set_redis_data(f"pending:{userid}:bind:address", value=1, ex=60)
 
         address = address.lower()
 
@@ -1050,8 +1050,8 @@ async def address_mintnft_B0(chainid:int, background_tasks: BackgroundTasks, use
             return {"code": 400, "success": False, "msg": "Mintnft maintenance, will be restored later."}
 
         ## 屏蔽用户多次请求 600
-        redis_pending_withdraw = await get_redis_data(f"pending:{userid}:mintnft")
-        if redis_pending_withdraw:
+        redis_pending = await get_redis_data(f"pending:{userid}:mintnft")
+        if redis_pending:
             return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
         await set_redis_data(f"pending:{userid}:mintnft", value=1, ex=600)
 

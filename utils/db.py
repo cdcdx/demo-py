@@ -406,7 +406,7 @@ class MySQLDatabase(Database):
                                 `created_time`        datetime      DEFAULT NOW(),
                                 `updated_time`        datetime      DEFAULT NULL ,
                                 PRIMARY KEY (`id`)  USING BTREE,
-                                INDEX idx_tx_hash (tx_hash)
+                                INDEX idx_txhash_nftid (tx_hash,nft_id)
                             ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
                         """)
                         await conn.commit()
@@ -662,6 +662,8 @@ class PostgreSQLDatabase(Database):
                     """)
                     # 创建索引
                     await conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_hash ON wenda_nft_onchain(tx_hash);")
+                    # 创建约束
+                    await conn.execute("ALTER TABLE wenda_nft_onchain ADD CONSTRAINT uk_wenda_nft_onchain_txhash_nftid UNIQUE (tx_hash, nft_id);")
                 
         except Exception as e:
             logger.error(f"Failed to create or check table: {e}")
@@ -838,7 +840,8 @@ async def get_db_app():
             async with conn.cursor() as cursor:
                 yield cursor
         elif isinstance(database, PostgreSQLDatabase):  # PostgreSQL 连接可以直接使用
-            yield conn
+            cursor = PostgreSQLCursor(conn)
+            yield cursor
 
 def format_query_for_db(query: str) -> str:
     """根据数据库类型格式化查询语句"""

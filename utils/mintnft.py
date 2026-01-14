@@ -1,5 +1,4 @@
 import asyncio
-import pymysql
 
 from config import APP_CONFIG, DB_ENGINE
 from utils.cache import get_redis_data, set_redis_data, del_redis_data
@@ -61,14 +60,15 @@ async def async_nft_mintnft(value):
         referral_code = generate_referralcode(address)
         logger.debug(f"tx_address: {address} referral_code: {referral_code}")
         
-        # 更新记录
-        update_query = "UPDATE wenda_users SET referral_code=%s WHERE address COLLATE utf8mb4_general_ci=%s"
-        values = (referral_code, address,)
-        formatted_update_query = format_query_for_db(update_query)
-        logger.debug(f"update_query: {update_query} values: {values}")
-        await cursor.execute(formatted_update_query, values)
-        if DB_ENGINE == "sqlite": cursor.connection.commit()
-        else: await cursor.connection.commit()
+        # # 更新邀请码
+        # update_query = "UPDATE wenda_users SET referral_code=%s WHERE address COLLATE utf8mb4_general_ci=%s"
+        # values = (referral_code, address,)
+        # formatted_update_query = format_query_for_db(update_query)
+        # logger.debug(f"update_query: {update_query} values: {values}")
+        # await cursor.execute(formatted_update_query, values)
+        # if DB_ENGINE == "sqlite": cursor.connection.commit()
+        # else: await cursor.connection.commit()
+        
         logger.success(f"update wenda_users {address} - {userid} => {referral_code}")
         return {
             "code": 200, 
@@ -128,14 +128,15 @@ def sync_nft_mintnft(value):
             referral_code = generate_referralcode(address)
             logger.debug(f"tx_address: {address} referral_code: {referral_code}")
             
-            # 更新邀请码
-            update_query = "UPDATE wenda_users SET referral_code=%s WHERE address COLLATE utf8mb4_general_ci=%s"
-            values = (referral_code, address,)
-            formatted_update_query = format_query_for_db(update_query)
-            logger.debug(f"update_query: {update_query} values: {values}")
-            await cursor.execute(formatted_update_query, values)
-            if DB_ENGINE == "sqlite": cursor.connection.commit()
-            else: await cursor.connection.commit()
+            # # 更新邀请码
+            # update_query = "UPDATE wenda_users SET referral_code=%s WHERE address COLLATE utf8mb4_general_ci=%s"
+            # values = (referral_code, address,)
+            # formatted_update_query = format_query_for_db(update_query)
+            # logger.debug(f"update_query: {update_query} values: {values}")
+            # await cursor.execute(formatted_update_query, values)
+            # if DB_ENGINE == "sqlite": cursor.connection.commit()
+            # else: await cursor.connection.commit()
+            
             logger.success(f"update wenda_users {address} - {userid} => {referral_code}")
             return {
                 "code": 200, 
