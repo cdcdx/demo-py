@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from cryptography.fernet import Fernet
 from dotenv import find_dotenv, load_dotenv, get_key, set_key
 
@@ -53,6 +54,7 @@ APP_STARTUP_MODE = os.getenv("APP_STARTUP_MODE", default="background")  # 启动
 APP_EMAIL_MODE = os.getenv("APP_EMAIL_MODE", default="email")  # 邮件模式
 APP_ADMIN_LIST = get_envsion("APP_ADMIN_LIST")  # 管理员权限
 APP_ACTION_LIST = get_envsion("APP_ACTION_LIST")  # 操作权限
+APP_BLACK_LIST = get_envsion("APP_BLACK_LIST")  # 用户黑名单
 APP_CONFIG = {
     "apibase": API_BASE_URL,
     "appbase": APP_BASE_URL,
@@ -65,6 +67,7 @@ APP_CONFIG = {
     "startup": APP_STARTUP_MODE.lower(),
     "admin": APP_ADMIN_LIST,
     "action": APP_ACTION_LIST,
+    "black": APP_BLACK_LIST,
 }
 
 
@@ -204,3 +207,24 @@ KAFKA_CONFIG={
     'topic': KAFKA_TOPIC,
     'topiclist': KAFKA_TOPIC_LIST,
 }
+
+
+## WEB3 Configuration
+WEB3_NETWORK = os.getenv("WEB3_NETWORK", default="Base Mainnet")
+WEB3_CONFIG = os.getenv("WEB3_CONFIG", default="")
+# print(f"WEB3_CONFIG: {WEB3_CONFIG}")
+
+# white prikey
+web3_configs: list = json.loads(WEB3_CONFIG)
+for web3_client in web3_configs:
+    if web3_client['network'] == WEB3_NETWORK:
+        WEB3_NETWORK_CONFIG = web3_client
+        break
+WEB3_WHITE_ENCRYPT = WEB3_NETWORK_CONFIG['white_prikey']
+# print(f"WEB3_WHITE_ENCRYPT: {WEB3_WHITE_ENCRYPT}")
+WEB3_WHITE_PRIKEY = FNet.decrypt(WEB3_WHITE_ENCRYPT.encode()).decode()
+if len(WEB3_WHITE_PRIKEY) != 64:
+    print(f"WEB3_WHITE_PRIKEY Data anomalies")
+    exit
+# print(f"WEB3_WHITE_PRIKEY: {WEB3_WHITE_PRIKEY}")
+

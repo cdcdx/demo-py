@@ -7,7 +7,6 @@ import time
 import math
 import string
 import random
-import ffmpeg
 import asyncio
 import hashlib
 import platform
@@ -15,12 +14,14 @@ import subprocess
 import shlex
 import shutil
 import ssl
+import bcrypt
 from zlib import crc32
 from pathlib import Path
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi.responses import StreamingResponse
 
+from utils.captcha import validate_captcha
 from utils.log import log as logger
 from config import *
 
@@ -48,7 +49,6 @@ def generate_userid(email):
     # print(f"email: {email} => userid: {userid}")
     return userid
 
-
 def shift_char(char: str, shift: int) -> str:
     """
     对单个字符 char 进行偏移, shift 为偏移量
@@ -62,18 +62,11 @@ def shift_char(char: str, shift: int) -> str:
     else:
         return chr(ord(char) + shift)
 
-def floor_decimal(n, decimals=0):
-    """
-    小数向下取整
-    """
-    multiplier = 10 ** decimals
-    return math.floor(n * multiplier) / multiplier
-
-def generate_register_code(userid, length=5):
+def generate_registercode(userid, length=5):
     # 生成随机码
     src_code = "".join(random.sample(string.ascii_letters + string.digits, length))
     # 生成随机顺序
-    input_str = f"{userid}NODEREGISTER{time.time()}"
+    input_str = f"{userid}BOXMINER{time.time()}"
     hash_val = hashlib.sha256(input_str.encode()).hexdigest()
     sort_code = hash_val[:length]
     # 随机码按序偏移
@@ -82,134 +75,87 @@ def generate_register_code(userid, length=5):
         shift = int(shift_digit, 16)  # 将数字字符转为整数
         referral_result.append(shift_char(char, shift))
     register_code = ''.join(referral_result).upper()
-    # register_code = "ga" + ''.join(referral_result)
     # logger.debug(f"src_code: {src_code} sort_code: {sort_code} => register_code: {register_code}")
     return register_code
 
+def generate_referralcode(address, length=8):
+    # 生成随机顺序
+    input_str = f"{address}BOXMINER"
+    hash_val = hashlib.sha256(input_str.encode()).hexdigest()
+    sort_code = hash_val[:length]
+    referral_code = sort_code.upper()
+    # logger.debug(f"sort_code: {sort_code} => referral_code: {referral_code}")
+    return referral_code
 
-def validate_sfzid(sfzid: str) -> bool:
+# ------------------------------------------------------
+
+def floor_decimal(n, decimals=0):
     """
-    验证18位身份证号码的合法性
-    
-    Args:
-        sfzid (str): 身份证号码字符串
-        
-    Returns:
-        bool: 验证结果，True表示合法，False表示不合法
+    小数向下取整
     """
-    # 基本格式检查
-    if not sfzid or len(sfzid) != 18:
+    multiplier = 10 ** decimals
+    return math.floor(n * multiplier) / multiplier
+
+def ceil_decimal(n, decimals=0):
+    """
+    小数向上取整
+    """
+    multiplier = 10 ** decimals
+    return math.ceil(n * multiplier) / multiplier
+
+# ------------------------------------------------------
+
+# 验证邮箱格式
+EMAIL_PATTERN = r"^[a-zA-Z0-9_+&*-]+(?:\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,7}$"
+
+def validate_email_format(email: str) -> bool:
+    """验证邮箱格式"""
+    return bool(re.match(EMAIL_PATTERN, email))
+
+# ------------------------------------------------------
+
+# 验证密码强度
+PASSWORD_PATTERN = r'^.*(?=.{8,})(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).*$'
+def validate_password_strength(password: str) -> str:
+    """
+    验证密码强度并返回处理后的密码
+    如果密码不是32/64位哈希，则根据规则验证并哈希
+    """
+    if len(password) != 32 and len(password) != 64:
+        if not re.match(PASSWORD_PATTERN, password):
+            logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
+            raise ValueError("密码不符合要求")
+        # 哈希密码并截取前20位
+        return hashlib.sha256(str(password).encode()).hexdigest()[:20]
+    else:
+        # 如果是32/64位哈希，截取前20位
+        return password[:20]
+
+def hash_password(password: str) -> str:
+    """安全地哈希密码"""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def check_password(plain_password: str, hashed_password: str) -> bool:
+    """检查密码是否匹配"""
+    try:
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    except Exception:
         return False
-    
-    # 检查是否全部为数字，除了最后一位可能是X
-    if not re.match(r'^\d{17}[\dXx]$', sfzid):
-        return False
-    
-    # 各位权重值
-    weight_factors = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
-    
-    # 校验码对应值
-    check_codes = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2']
-    
-    # 计算前17位与权重的乘积和
-    sum_value = 0
-    for i in range(17):
-        sum_value += int(sfzid[i]) * weight_factors[i]
-    
-    # 计算校验码
-    mod = sum_value % 11
-    expected_check_code = check_codes[mod]
-    
-    # 比较校验码
-    return sfzid[17].upper() == expected_check_code
 
-def validate_email(email: str) -> bool:
-    """
-    验证邮箱地址格式
-    
-    Args:
-        email (str): 邮箱地址字符串
-        
-    Returns:
-        bool: 验证结果，True表示合法，False表示不合法
-    """
-    if not email:
-        return False
-    
-    # 邮箱正则表达式
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-    return re.match(pattern, email) is not None
+# ------------------------------------------------------
 
-def generate_random_sfzid():
-    """
-    随机生成一个符合规则的身份证号码
-    
-    身份证号码构成：
-    1-6位：地址码
-    7-14位：出生日期码 YYYYMMDD
-    15-17位：顺序码，奇数为男，偶数为女
-    18位：校验码
-    """
-    import random
-    from datetime import datetime, timedelta
-    
-    # 常用地址码列表（部分）
-    address_codes = [
-        "110000", "120000", "130000", "140000", "150000",  # 北京、天津、河北、山西、内蒙古
-        "210000", "220000", "230000",                      # 辽宁、吉林、黑龙江
-        "310000", "320000", "330000", "340000", "350000", "360000", "370000",  # 上海、江苏、浙江、安徽、福建、江西、山东
-        "410000", "420000", "430000", "440000", "450000", "460000",            # 河南、湖北、湖南、广东、广西、海南
-        "500000", "510000", "520000", "530000", "540000",                      # 重庆、四川、贵州、云南、西藏
-        "610000", "620000", "630000", "640000", "650000",                      # 陕西、甘肃、青海、宁夏、新疆
-        "810000", "820000"                                                     # 香港、澳门
-    ]
-    
-    # 随机选择一个地址码
-    address_code = random.choice(address_codes)
-    
-    # 生成随机出生日期 (1950-01-01 到 2005-12-31)
-    start_date = datetime(1950, 1, 1)
-    end_date = datetime(2005, 12, 31)
-    random_date = start_date + timedelta(
-        days=random.randint(0, (end_date - start_date).days)
-    )
-    birth_date = random_date.strftime("%Y%m%d")
-    
-    # 生成顺序码 (15-17位)
-    order_code = f"{random.randint(0, 999):03d}"
-    
-    # 构造前17位
-    id_without_check = address_code[:6] + birth_date + order_code
-    
-    # 计算校验码
-    check_code = calculate_check_digit(id_without_check)
-    
-    # 返回完整的身份证号码
-    return id_without_check + check_code
-
-def calculate_check_digit(id_number):
-    """
-    根据身份证前17位计算第18位校验码
-    
-    Args:
-        id_number: 身份证前17位
-        
-    Returns:
-        校验码 (0-9 或 X)
-    """
-    # 加权因子
-    weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
-    
-    # 校验码对应表
-    check_codes = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2']
-    
-    # 计算加权和
-    sum_value = 0
-    for i in range(17):
-        sum_value += int(id_number[i]) * weights[i]
-    
-    # 取模并返回对应的校验码
-    return check_codes[sum_value % 11]
+# 验证旋转门Token
+def verify_recaptcha_token(recaptcha_token: str) -> bool:
+    """验证reCAPTCHA令牌"""
+    if len(recaptcha_token) > 256 or (APP_CONFIG['level'] != 'debug'):  # debug不校验
+        res_captcha = validate_captcha(recaptcha_token)
+        if res_captcha is None:
+            logger.error(f"STATUS: 403 ERROR: Captcha exception")
+            return False
+        elif res_captcha['success'] == False:
+            logger.error(f"STATUS: 401 ERROR: Invalid captcha - {res_captcha['error-codes'][0]}")
+            return False
+    return True
 
 # ------------------------------------------------------
 

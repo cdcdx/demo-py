@@ -2,9 +2,9 @@
 
 ## 功能
 - admin.py [ok]
-  - register_code/list
-  - register_code/generate
-  - register_code/history
+  - registercode/list
+  - registercode/generate
+  - registercode/history
   - test/login/uid
 - auth.py [ok]
   - regiter
@@ -49,4 +49,4 @@
 - [ok]REDIS : redis
 - [ok]KAFKA : kafka
 - [  ]AI : openai / aliyun
-- [  ]多语言切换：i18n
+- [  ]多语言 : i18n

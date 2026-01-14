@@ -9,8 +9,8 @@ from aiokafka.errors import UnknownTopicOrPartitionError
 from loguru import logger
 
 from config import KAFKA_CONFIG, APP_CONFIG
-from utils.email import send_normal_mail, send_activity_mail, send_activation_mail, send_reset_mail, send_newpasswd_mail
-from utils.mintnft import async_boxnft_mintnft
+from utils.email import send_normal_mail, send_activation_mail, send_reset_mail, send_newpasswd_mail
+from utils.mintnft import async_nft_mintnft
 # from utils.log import log as logger
 
 KAFKA_BOOTSTRAP_SERVERS = KAFKA_CONFIG['address']
@@ -22,9 +22,7 @@ KAFKA_CONSUMER_GROUP = KAFKA_CONFIG['group']
 # mail
 async def kafka_send_email(offset, value):
     logger.debug(f"kafka_send_email offset: {offset} value: {value}")
-    if value['subject'] == 'activity':
-        result = send_activity_mail(value['to_email'], value['username'], value['context'])
-    elif value['subject'] == 'activation':
+    if value['subject'] == 'activation':
         result = send_activation_mail(value['to_email'], value['username'], value['context'])
     elif value['subject'] == 'reset':
         result = send_reset_mail(value['to_email'], value['username'], value['context'])
@@ -37,7 +35,7 @@ async def kafka_send_email(offset, value):
 # mintnft
 async def kafka_update_mintnft(offset, value):
     logger.debug(f"kafka_update_mintnft offset: {offset} value: {value}")
-    await async_boxnft_mintnft(value)
+    await async_nft_mintnft(value)
 
 # ========================================================== consume topic
 

@@ -8,11 +8,12 @@ from loguru import logger
 
 from config import JWT_CONFIG, APP_CONFIG, set_envsion, get_envsion
 from utils.bearertoken import md58, bearer, decode_access_token
-from utils.db import get_db
+from utils.cache import get_redis_data, set_redis_data, del_redis_data, increment_redis_data
+from utils.db import get_db, format_query_for_db, convert_row_to_dict
 
 
 # 校验:Token密码
-async def get_current_userid(authorization: HTTPAuthorizationCredentials = Depends(bearer)):
+async def get_current_userid(authorization: HTTPAuthorizationCredentials = Depends(bearer), cursor=Depends(get_db)):
     credentials_exception = HTTPException(status_code=401, detail="Invalid JWT Token")
     userid = ''
     try:
@@ -40,6 +41,36 @@ async def get_current_userid(authorization: HTTPAuthorizationCredentials = Depen
         if jwt_secret is None:
             raise credentials_exception
 
+        ## redis 获取账号密码
+        redis_user_passwd = await get_redis_data(f"box:{userid}:pwd")
+        # logger.debug(f"redis redis_user_passwd: {redis_user_passwd}")
+        if not redis_user_passwd:
+            # secret有效性校验
+            check_query = "SELECT password FROM wenda_users WHERE username=%s"
+            values = (username,)
+            check_query = format_query_for_db(check_query)
+            logger.debug(f"check_query: {check_query} values: {values}")
+            await cursor.execute(check_query, values)
+            existing_user = await cursor.fetchone()
+            # logger.debug(f"existing_user: {existing_user}")
+            if existing_user is None:
+                raise credentials_exception
+            existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+            logger.debug(f"existing_user: {existing_user}")
+            mysql_user_passwd = existing_user['password']
+            db_secret = md58(mysql_user_passwd)
+            logger.debug(f"mysql sql.secret: {db_secret} jwt.secret: {jwt_secret}")
+            if db_secret != jwt_secret:
+                raise credentials_exception
+            # redis 设置
+            await set_redis_data(f"box:{userid}:pwd", value=mysql_user_passwd, ex=JWT_CONFIG['expire'])
+        else:
+            db_secret = md58(redis_user_passwd)
+            logger.debug(f"redis redis.secret: {db_secret} jwt.secret: {jwt_secret}")
+            if db_secret != jwt_secret:
+                # redis 删除
+                await del_redis_data(f"box:{userid}:pwd")
+                raise credentials_exception
     except JWTError:
         raise credentials_exception
     return userid

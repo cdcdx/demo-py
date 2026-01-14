@@ -4,6 +4,9 @@ import urllib
 import aiosqlite
 import aiomysql
 import asyncpg
+import datetime
+from datetime import datetime as dt
+from decimal import Decimal
 from contextlib import asynccontextmanager
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator
@@ -45,13 +48,16 @@ class SQLiteDatabase(Database):
     async def connect(self) -> None:
         """连接数据库并创建表"""
         try:
-            # 检查数据库文件是否存在，如果不存在则创建
+            # 检查数据库文件是否存在，不存在则创建
             if not os.path.exists(self.url):
                 await self._initialize_database()
             
-            # 创建连接池（对于SQLite，实际上是单个连接）
+            # 创建连接池
             self.pool = await aiosqlite.connect(self.url, uri=True, check_same_thread=False)
-            await self.create_tables()
+            if self.pool:
+                logger.info("Connected to SQLite database")
+                # 连接成功后检查并创建表
+                await self.create_tables()
         except Exception as e:
             logger.error(f"Failed to connect to SQLite database: {e}")
             raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
@@ -81,6 +87,8 @@ class SQLiteDatabase(Database):
                     username       TEXT     DEFAULT '',
                     password       TEXT     DEFAULT '',
                     address        TEXT     DEFAULT '',
+                    social_dc      TEXT     DEFAULT '',
+                    social_x       TEXT     DEFAULT '',
                     state          TEXT     DEFAULT 'UNVERIFIED',
                     cooldown_time  DATETIME DEFAULT NULL,
                     created_time   DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -147,6 +155,32 @@ class SQLiteDatabase(Database):
                 );
             """)
             
+            # 创建NFT表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS wenda_nft_onchain (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    contract_address    TEXT     DEFAULT '',
+                    tx_chainid          INTEGER  DEFAULT 0,  -- chainid
+                    tx_blockid          INTEGER  DEFAULT 0,  -- blockid
+                    tx_hash             TEXT     DEFAULT '',
+                    tx_date             TEXT     DEFAULT '',
+                    tx_amount_sxp       float    DEFAULT 0.0,
+                    tx_amount_eth       float    DEFAULT 0.0,
+                    tx_amount_total     float    DEFAULT 0.0,
+                    tx_address          TEXT     DEFAULT '',
+                    referral_code       TEXT     DEFAULT '',
+                    par_address         TEXT     DEFAULT '',
+                    par_referral_code   TEXT     DEFAULT '',
+                    nft_id              INTEGER  DEFAULT 0,
+                    nft_boxid           INTEGER  DEFAULT 0,
+                    nft_timestamp       INTEGER  DEFAULT 0,
+                    status              TINYINT  DEFAULT 0,  -- -1 failed, 0 pending, 1 mint, 2 addkol
+                    note                TEXT     DEFAULT '',
+                    created_time        DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_time        DATETIME DEFAULT NULL
+                );
+            """)
+            
             if should_commit:
                 await conn.commit()
         except Exception as e:
@@ -186,6 +220,7 @@ class MySQLDatabase(Database):
 
     async def connect(self) -> None:
         try:
+            # 创建连接池
             self.pool = await aiomysql.create_pool(
                 host=self.host,
                 port=self.port,
@@ -194,23 +229,36 @@ class MySQLDatabase(Database):
                 db=self.db,
                 maxsize=DB_MAXCONNECT
             )
-            # 连接成功后检查并创建表
-            await self.create_tables()
+            if self.pool:
+                logger.info("Connected to PostgreSQL database")
+                # 连接成功后检查并创建表
+                await self.create_tables()
         except aiomysql.Error as e:
             logger.error(f"Failed to connect to MySQL database: {e}")
-            # 尝试创建数据库
-            await self.create_database()
-            # 重新尝试创建连接池
-            self.pool = await aiomysql.create_pool(
-                host=self.host,
-                port=self.port,
-                user=self.username,
-                password=self.password,
-                db=self.db,
-                maxsize=DB_MAXCONNECT
-            )
-            # 连接成功后检查并创建表
-            await self.create_tables()
+            # 检查错误是否与用户不存在相关
+            if "does not exist" in str(e) or "authentication" in str(e).lower():
+                logger.error(f"Database authentication failed: {e}")
+                raise Exception(f"Database authentication failed: {e}")
+            else:
+                # 尝试创建数据库
+                try:
+                    await self.create_database()
+                    # 重新尝试创建连接池
+                    self.pool = await aiomysql.create_pool(
+                        host=self.host,
+                        port=self.port,
+                        user=self.username,
+                        password=self.password,
+                        db=self.db,
+                        maxsize=DB_MAXCONNECT
+                    )
+                    if self.pool:
+                        logger.info("Connected to MySQL database")
+                        # 连接成功后检查并创建表
+                        await self.create_tables()
+                except Exception as create_error:
+                    logger.error(f"Failed to create or connect to database: {create_error}")
+                    raise Exception(f"Failed to initialize database: {create_error}")
 
     async def create_database(self) -> None:
         try:
@@ -225,6 +273,7 @@ class MySQLDatabase(Database):
                     await conn.commit()
         except aiomysql.Error as e:
             logger.error(f"Failed to create MySQL database: {e}")
+            # return False
             raise HTTPException(status_code=500, detail="Failed to create database")
 
     async def create_tables(self) -> None:
@@ -237,19 +286,17 @@ class MySQLDatabase(Database):
                     if not table_exists:
                         # 表不存在，创建表
                         await cursor.execute("""
-                            CREATE TABLE `wenda_users`
-                            (
+                            CREATE TABLE IF NOT EXISTS wenda_users (
                                 `id`                   int           NOT NULL AUTO_INCREMENT COMMENT 'id',
                                 `register_code`        varchar(16)   NOT NULL    COMMENT '注册码',      -- 一人一码
-
                                 `email`                varchar(128)  DEFAULT ''  COMMENT '邮箱',
                                 `userid`               varchar(32)   DEFAULT ''  COMMENT '用户ID',
                                 `username`             varchar(64)   DEFAULT ''  COMMENT '用户名',
                                 `password`             varchar(255)  DEFAULT ''  COMMENT '密码哈希',
-
-                                `address`              varchar(64)   DEFAULT ''  COMMENT '钱包地址',
+                                `address`              varchar(64)   DEFAULT ''  COMMENT 'Address',
+                                `social_dc`            varchar(64)   DEFAULT ''  COMMENT 'Discord',
+                                `social_x`             varchar(64)   DEFAULT ''  COMMENT 'Twitter',
                                 `state`                varchar(32)   DEFAULT 'UNVERIFIED' COMMENT '用户状态',    -- UNVERIFIED/VERIFIED/ACTIVE
-
                                 `cooldown_time`        datetime      DEFAULT NULL,
                                 `created_time`         datetime      DEFAULT CURRENT_TIMESTAMP,
                                 `updated_time`         datetime      DEFAULT NULL,
@@ -274,21 +321,17 @@ class MySQLDatabase(Database):
                     if not table_exists:
                         # 表不存在，创建表
                         await cursor.execute("""
-                            CREATE TABLE `wenda_users_social_x`
-                            (
+                            CREATE TABLE IF NOT EXISTS wenda_users_social_x (
                                 `id`                  int           NOT NULL AUTO_INCREMENT COMMENT 'id',
                                 `userid`              varchar(32)   DEFAULT '' COMMENT '用户ID',
-
                                 `social_uuid`         varchar(64)   DEFAULT '' COMMENT 'twitter',
                                 `social_type`         varchar(16)   DEFAULT '' COMMENT 'twitter',  -- authorize/follow/retweet
                                 `social_action`       varchar(8)    DEFAULT '' COMMENT 'twitter',  -- '' or 0: - follow false / 1: follow true
-
                                 `social_id`           varchar(32)   DEFAULT '' COMMENT 'ID',
                                 `social_name`         varchar(64)   DEFAULT '' COMMENT '名字',
                                 `social_global_name`  varchar(64)   DEFAULT '' COMMENT '全名',
                                 `social_avatar`       varchar(128)  DEFAULT '' COMMENT '头像',
                                 `social_locale`       varchar(32)   DEFAULT '' COMMENT '语言',
-
                                 `access_token`        varchar(64)   DEFAULT '' COMMENT 'twitter',
                                 `access_token_secret` varchar(64)   DEFAULT '' COMMENT 'twitter',
                                 `x_followers_count`   int           DEFAULT 0,
@@ -298,13 +341,12 @@ class MySQLDatabase(Database):
                                 `x_statuses_count`    int           DEFAULT 0,
                                 `x_created_at`        varchar(32)   DEFAULT '',
                                 `x_email`             varchar(64)   DEFAULT '',
-
                                 `status`              int           DEFAULT 0  COMMENT '状态',    -- 0 failed, 1 doing, 2 success
-
                                 `created_time`        datetime   DEFAULT NOW() COMMENT '创建时间',
                                 `updated_time`        datetime   DEFAULT NULL  COMMENT '更新时间',
                                 PRIMARY KEY (`id`)  USING BTREE,
-                                INDEX idx_address (address)
+                                INDEX idx_userid (userid),
+                                INDEX idx_social_uuid (social_uuid)
                             ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
                         """)
                         await conn.commit()
@@ -315,27 +357,56 @@ class MySQLDatabase(Database):
                     if not table_exists:
                         # 表不存在，创建表
                         await cursor.execute("""
-                            CREATE TABLE `wenda_users_social_dc`
-                            (
+                            CREATE TABLE IF NOT EXISTS wenda_users_social_dc (
                                 `id`                  int           NOT NULL AUTO_INCREMENT COMMENT 'id',
                                 `userid`              varchar(32)   DEFAULT '' COMMENT '用户ID',
-
                                 `social_uuid`         varchar(64)   DEFAULT '' COMMENT 'discord',
                                 `social_type`         varchar(16)   DEFAULT '' COMMENT 'discord',  -- authorize/join
                                 `social_action`       varchar(8)    DEFAULT '' COMMENT 'discord',  -- '' or 0: - join false / 1: join true
-
                                 `social_id`           varchar(32)   DEFAULT '' COMMENT 'ID',
                                 `social_name`         varchar(64)   DEFAULT '' COMMENT '名字',
                                 `social_global_name`  varchar(64)   DEFAULT '' COMMENT '全名',
                                 `social_avatar`       varchar(128)  DEFAULT '' COMMENT '头像',
                                 `social_locale`       varchar(32)   DEFAULT '' COMMENT '语言',
-
                                 `status`              int           DEFAULT 0  COMMENT '状态',    -- 0 failed, 1 doing, 2 success
-
                                 `created_time`        datetime   DEFAULT NOW() COMMENT '创建时间',
                                 `updated_time`        datetime   DEFAULT NULL  COMMENT '更新时间',
                                 PRIMARY KEY (`id`)  USING BTREE,
-                                INDEX idx_address (address)
+                                INDEX idx_userid (userid),
+                                INDEX idx_social_uuid (social_uuid)
+                            ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
+                        """)
+                        await conn.commit()
+                    
+                    # 检查表是否存在 mysql wenda_nft_onchain
+                    await cursor.execute("SHOW TABLES LIKE 'wenda_nft_onchain'")
+                    table_exists = await cursor.fetchone()
+                    if not table_exists:
+                        # 表不存在，创建表
+                        await cursor.execute("""
+                            CREATE TABLE IF NOT EXISTS wenda_nft_onchain (
+                                `id`                  int           NOT NULL AUTO_INCREMENT COMMENT 'id',
+                                `contract_address`    varchar(64)   NOT NULL    COMMENT '合约地址',
+                                `tx_chainid`          int           DEFAULT 0,  -- chainid
+                                `tx_blockid`          int           DEFAULT 0,  -- blockid
+                                `tx_hash`             varchar(128)  DEFAULT '',
+                                `tx_date`             varchar(32)   DEFAULT '',
+                                `tx_amount_sxp`       float         DEFAULT 0.0 COMMENT 'SXP金额',
+                                `tx_amount_eth`       float         DEFAULT 0.0 COMMENT 'ETH金额',
+                                `tx_amount_total`     float         DEFAULT 0.0 COMMENT '换算后ETH总额',
+                                `tx_address`          varchar(64)   NOT NULL    COMMENT '钱包地址',
+                                `referral_code`       varchar(16)   NOT NULL    COMMENT '邀请码',  -- 固定不变 由钱包生成
+                                `par_address`         varchar(64)   DEFAULT ''  COMMENT '父级地址',
+                                `par_referral_code`   varchar(32)   DEFAULT ''  COMMENT '父级邀请码',
+                                `nft_id`              int           DEFAULT 0   COMMENT 'NFTID',
+                                `nft_boxid`           int           DEFAULT 0   COMMENT 'NFT等级',  -- B0-B1
+                                `nft_timestamp`       int           DEFAULT 0   COMMENT 'NFT时间戳',
+                                `status`              TINYINT       DEFAULT 0   COMMENT '交易状态', -- -1 failed, 0 pending, 1 mint, 2 addkol
+                                `note`                varchar(256)  DEFAULT ''  COMMENT '备注',
+                                `created_time`        datetime      DEFAULT NOW(),
+                                `updated_time`        datetime      DEFAULT NULL ,
+                                PRIMARY KEY (`id`)  USING BTREE,
+                                INDEX idx_tx_hash (tx_hash)
                             ) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci ROW_FORMAT = Dynamic;
                         """)
                         await conn.commit()
@@ -375,6 +446,7 @@ class PostgreSQLDatabase(Database):
 
     async def connect(self) -> None:
         try:
+            # 创建连接池
             self.pool = await asyncpg.create_pool(
                 host=self.host,
                 port=self.port,
@@ -384,24 +456,37 @@ class PostgreSQLDatabase(Database):
                 min_size=5,
                 max_size=DB_MAXCONNECT
             )
-            # 连接成功后检查并创建表
-            await self.create_tables()
+            if self.pool:
+                logger.info("Connected to PostgreSQL database")
+                # 连接成功后检查并创建表
+                await self.create_tables()
         except Exception as e:
             logger.error(f"Failed to connect to PostgreSQL database: {e}")
-            # 尝试创建数据库
-            await self.create_database()
-            # 重新尝试创建连接池
-            self.pool = await asyncpg.create_pool(
-                host=self.host,
-                port=self.port,
-                user=self.username,
-                password=self.password,
-                database=self.db,
-                min_size=5,
-                max_size=20
-            )
-            # 连接成功后检查并创建表
-            await self.create_tables()
+            # 检查错误是否与用户不存在相关
+            if "does not exist" in str(e) or "authentication" in str(e).lower():
+                logger.error(f"Database authentication failed: {e}")
+                raise Exception(f"Database authentication failed: {e}")
+            else:
+                # 尝试创建数据库
+                try:
+                    await self.create_database()
+                    # 重新尝试创建连接池
+                    self.pool = await asyncpg.create_pool(
+                        host=self.host,
+                        port=self.port,
+                        user=self.username,
+                        password=self.password,
+                        database=self.db,
+                        min_size=5,
+                        max_size=20
+                    )
+                    if self.pool:
+                        logger.info("Connected to PostgreSQL database")
+                        # 连接成功后检查并创建表
+                        await self.create_tables()
+                except Exception as create_error:
+                    logger.error(f"Failed to create or connect to database: {create_error}")
+                    raise Exception(f"Failed to initialize database: {create_error}")
 
     async def create_database(self) -> None:
         try:
@@ -415,11 +500,15 @@ class PostgreSQLDatabase(Database):
             )
             
             async with default_pool.acquire() as conn:
-                await conn.execute(f"CREATE DATABASE IF NOT EXISTS {self.db}")
-            
+                db_exists = await conn.fetchval(f"SELECT 1 FROM pg_database WHERE datname = '{self.db}'")
+                if not db_exists:
+                    await conn.execute(f"CREATE DATABASE {self.db}")
+                else:
+                    logger.info(f"Database {self.db} already exists")
             await default_pool.close()
         except Exception as e:
             logger.error(f"Failed to create PostgreSQL database: {e}")
+            # return False
             raise HTTPException(status_code=500, detail="Failed to create database")
 
     async def create_tables(self) -> None:
@@ -436,23 +525,27 @@ class PostgreSQLDatabase(Database):
                 if not table_exists:
                     # 表不存在，创建表
                     await conn.execute("""
-                        CREATE TABLE wenda_users (
+                        CREATE TABLE IF NOT EXISTS wenda_users (
                             id            SERIAL PRIMARY KEY,
                             register_code VARCHAR(16)  NOT NULL, -- 一人一码
                             email         VARCHAR(128) DEFAULT '',
                             userid        VARCHAR(32)  DEFAULT '',
                             username      VARCHAR(64)  DEFAULT '',
                             password      VARCHAR(255) DEFAULT '',
-                            address       VARCHAR(64)  DEFAULT '',
+                            address       VARCHAR(64)  DEFAULT '', -- Address
+                            social_dc     VARCHAR(64)  DEFAULT '', -- Discord
+                            social_x      VARCHAR(64)  DEFAULT '', -- Twitter
                             state         VARCHAR(32)  DEFAULT 'UNVERIFIED', -- 用户状态: UNVERIFIED/VERIFIED/ACTIVE
                             cooldown_time TIMESTAMP    DEFAULT NULL,
                             created_time  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
                             updated_time  TIMESTAMP    DEFAULT NULL
                         );
                     """)
-                    # 添加注释
-                    await conn.execute("COMMENT ON COLUMN wenda_users.register_code IS '注册码，一人一码';")
-                    await conn.execute("COMMENT ON COLUMN wenda_users.state IS '用户状态: UNVERIFIED/VERIFIED/ACTIVE';")
+                    # 创建索引
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_email ON wenda_users(email);")
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_userid ON wenda_users(userid);")
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_username ON wenda_users(username);")
+                    
                     # 插入数据
                     await conn.execute("""
                         INSERT INTO wenda_users (id, register_code, email, userid, username, password, state, created_time) VALUES 
@@ -464,11 +557,6 @@ class PostgreSQLDatabase(Database):
                     await conn.execute("""
                         SELECT setval('wenda_users_id_seq', (SELECT MAX(id) FROM wenda_users));
                     """)
-
-                    # 创建索引
-                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_wenda_users_email ON wenda_users(email);")
-                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_wenda_users_userid ON wenda_users(userid);")
-                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_wenda_users_username ON wenda_users(username);")
                 
                 # 检查表是否存在 postgresql wenda_users_social_x
                 table_exists = await conn.fetchval("""
@@ -480,20 +568,17 @@ class PostgreSQLDatabase(Database):
                 """)
                 if not table_exists:
                     await conn.execute("""
-                        CREATE TABLE wenda_users_social_x (
+                        CREATE TABLE IF NOT EXISTS wenda_users_social_x (
                             id                  SERIAL        NOT NULL PRIMARY KEY,
                             userid              VARCHAR(32)   DEFAULT '',
-
                             social_uuid         VARCHAR(64)   DEFAULT '',
                             social_type         VARCHAR(16)   DEFAULT '',  -- authorize/follow/retweet
                             social_action       VARCHAR(8)    DEFAULT '',  -- '' or 0: - follow false / 1: follow true
-
                             social_id           VARCHAR(32)   DEFAULT '',
                             social_name         VARCHAR(64)   DEFAULT '',
                             social_global_name  VARCHAR(64)   DEFAULT '',
                             social_avatar       VARCHAR(128)  DEFAULT '',
                             social_locale       VARCHAR(32)   DEFAULT '',
-
                             access_token        VARCHAR(64)   DEFAULT '',
                             access_token_secret VARCHAR(64)   DEFAULT '',
                             x_followers_count   INTEGER       DEFAULT 0,
@@ -503,15 +588,14 @@ class PostgreSQLDatabase(Database):
                             x_statuses_count    INTEGER       DEFAULT 0,
                             x_created_at        VARCHAR(32)   DEFAULT '',
                             x_email             VARCHAR(64)   DEFAULT '',
-
                             status              INTEGER       DEFAULT 0,    -- 状态: 0 failed, 1 doing, 2 success
-
                             created_time        TIMESTAMP     DEFAULT NOW(),
                             updated_time        TIMESTAMP     DEFAULT NULL
                         );
                     """)
-                    # 添加注释
-                    await conn.execute("COMMENT ON COLUMN wenda_users_social_x.status IS '状态: -1 delete, 0 pending, 1 active';")
+                    # 创建索引
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_userid ON wenda_users_social_x(userid);")
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_social_uuid ON wenda_users_social_x(social_uuid);")
                 
                 # 检查表是否存在 postgresql wenda_users_social_dc
                 table_exists = await conn.fetchval("""
@@ -523,28 +607,61 @@ class PostgreSQLDatabase(Database):
                 """)
                 if not table_exists:
                     await conn.execute("""
-                        CREATE TABLE wenda_users_social_dc (
+                        CREATE TABLE IF NOT EXISTS wenda_users_social_dc (
                             id                  SERIAL        NOT NULL PRIMARY KEY,
                             userid              VARCHAR(32)   DEFAULT '',
-
                             social_uuid         VARCHAR(64)   DEFAULT '',
                             social_type         VARCHAR(16)   DEFAULT '',  -- authorize/join
                             social_action       VARCHAR(8)    DEFAULT '',  -- '' or 0: - join false / 1: join true
-
                             social_id           VARCHAR(32)   DEFAULT '',
                             social_name         VARCHAR(64)   DEFAULT '',
                             social_global_name  VARCHAR(64)   DEFAULT '',
                             social_avatar       VARCHAR(128)  DEFAULT '',
                             social_locale       VARCHAR(32)   DEFAULT '',
-
                             status              INTEGER       DEFAULT 0,    -- 状态: 0 failed, 1 doing, 2 success
-
                             created_time        TIMESTAMP     DEFAULT NOW(),
                             updated_time        TIMESTAMP     DEFAULT NULL
                         );
                     """)
-                    # 添加注释
-                    await conn.execute("COMMENT ON COLUMN wenda_users_social_dc.status IS '状态: -1 delete, 0 pending, 1 active';")
+                    # 创建索引
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_userid ON wenda_users_social_dc(userid);")
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_social_uuid ON wenda_users_social_dc(social_uuid);")
+                
+                # 检查表是否存在 postgresql wenda_nft_onchain
+                table_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'wenda_nft_onchain'
+                    );
+                """)
+                if not table_exists:
+                    await conn.execute("""
+                        CREATE TABLE IF NOT EXISTS wenda_nft_onchain (
+                            id                  SERIAL        NOT NULL PRIMARY KEY,
+                            contract_address    VARCHAR(64)   NOT NULL,
+                            tx_chainid          INTEGER       DEFAULT 0,  -- chainid
+                            tx_blockid          INTEGER       DEFAULT 0,  -- blockid
+                            tx_hash             VARCHAR(128)  DEFAULT '',
+                            tx_date             VARCHAR(32)   DEFAULT '',
+                            tx_amount_sxp       FLOAT         DEFAULT 0.0,
+                            tx_amount_eth       FLOAT         DEFAULT 0.0,
+                            tx_amount_total     FLOAT         DEFAULT 0.0,
+                            tx_address          VARCHAR(64)   NOT NULL,
+                            referral_code       VARCHAR(16)   NOT NULL,
+                            par_address         VARCHAR(64)   DEFAULT '',
+                            par_referral_code   VARCHAR(32)   DEFAULT '',
+                            nft_id              INTEGER       DEFAULT 0 ,
+                            nft_boxid           INTEGER       DEFAULT 0 ,
+                            nft_timestamp       INTEGER       DEFAULT 0 ,
+                            status              INTEGER       DEFAULT 0 ,
+                            note                VARCHAR(256)  DEFAULT '',
+                            created_time        TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+                            updated_time        TIMESTAMP     DEFAULT NULL 
+                        );
+                    """)
+                    # 创建索引
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_hash ON wenda_nft_onchain(tx_hash);")
                 
         except Exception as e:
             logger.error(f"Failed to create or check table: {e}")
@@ -726,41 +843,75 @@ async def get_db_app():
 def format_query_for_db(query: str) -> str:
     """根据数据库类型格式化查询语句"""
     if DB_ENGINE == "sqlite": # 将 %s 替换为 ?
+        # 将 %s 替换为 ?
+        query = query.replace('%s', '?')
+        query = query.replace('NOW()', 'CURRENT_TIMESTAMP')
+        
         # 处理 unix_timestamp 语法
         query = re.sub(r'unix_timestamp\(([^)]+)\)', r'strftime(\1)', query)
-        # 处理 LEN 语法
-        query = re.sub(r'LEN\(([^)]+)\)', r'LENGTH(\1)', query)
         
         # 处理 COLLATE utf8mb4_general_ci 语法
         query = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s+COLLATE\s+utf8mb4_general_ci\s+=\s+(%s)', r'LOWER(\1) = LOWER(\2)', query, flags=re.IGNORECASE)
         
-        # 将 %s 替换为 ?
-        query = query.replace('%s', '?')
-        query = query.replace('NOW()', 'CURRENT_TIMESTAMP')
         return query
     elif DB_ENGINE == "postgresql": # 将 %s 替换为 $1, $2, $3...
-        # 处理 unix_timestamp 语法
-        query = re.sub(r'unix_timestamp\(([^)]+)\)', r'EXTRACT(EPOCH FROM \1)', query)
-        # 处理 LEN 语法
-        query = re.sub(r'LEN\(([^)]+)\)', r'LENGTH(\1)', query)
-        
-        # 处理 LIMIT 语法
-        ## 处理参数化的LIMIT子句: LIMIT %s, %s 或 LIMIT %s,%s
-        query = re.sub(r'LIMIT\s*%s\s*,\s*%s', 'LIMIT_POSTGRES_TEMP_2_OFFSET_1', query, flags=re.IGNORECASE)
-        query = re.sub(r'LIMIT\s*%s,%s', 'LIMIT_POSTGRES_TEMP_2_OFFSET_1', query, flags=re.IGNORECASE)
-        ## 处理数字的LIMIT子句: LIMIT 1, 20 或 LIMIT 1,20
-        query = re.sub(r'LIMIT\s*(\d+)\s*,\s*(\d+)', r'LIMIT \2 OFFSET \1', query, flags=re.IGNORECASE)
-        query = re.sub(r'LIMIT\s*(\d+),(\d+)', r'LIMIT \2 OFFSET \1', query, flags=re.IGNORECASE)
-        ## 然后将临时标记替换为真正的PostgreSQL语法
-        query = re.sub(r'LIMIT_POSTGRES_TEMP_2_OFFSET_1', 'LIMIT $2 OFFSET $1', query)
-        
-        # 处理 COLLATE utf8mb4_general_ci 语法
-        query = query.replace('COLLATE utf8mb4_general_ci', 'ILIKE')
-        
         # 将 %s 替换为 $1, $2, $3...
         param_count = query.count('%s')
         for i in range(param_count):
             query = query.replace('%s', f'${i+1}', 1)
+        
+        # 处理 LIMIT 语法
+        # 处理数字的LIMIT子句: LIMIT 1, 20 或 LIMIT 1,20
+        query = re.sub(r'LIMIT\s*(\d+)\s*,\s*(\d+)', r'LIMIT \2 OFFSET \1', query, flags=re.IGNORECASE)
+        query = re.sub(r'LIMIT\s*(\d+),(\d+)', r'LIMIT \2 OFFSET \1', query, flags=re.IGNORECASE)
+        # 处理参数化的LIMIT子句: LIMIT $2, $3 -> LIMIT $3 OFFSET $2
+        query = re.sub(r'LIMIT\s*\$(\d+)\s*,\s*\$(\d+)', lambda m: f'LIMIT ${m.group(2)} OFFSET ${m.group(1)}', query, flags=re.IGNORECASE)
+        query = re.sub(r'LIMIT\s*\$(\d+),\$(\d+)', lambda m: f'LIMIT ${m.group(2)} OFFSET ${m.group(1)}', query, flags=re.IGNORECASE)
+        
+        # 处理 UPDATE JOIN 语法
+        # 将 UPDATE table1 alias1 JOIN (subquery) temp ON alias1.key = temp.key SET xxxx 转换为 
+        #    UPDATE table1 alias1 SET xxxx FROM (subquery) WHERE alias1.key = temp.key
+        query = re.sub(
+            r'UPDATE\s+(\w+)\s+(\w+)\s+JOIN\s+\(\s*(.*?)\s*\)\s+(\w+)\s+ON\s+(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)\s+SET\s+(.+?)(?:;|$)',
+            lambda m: f"UPDATE {m.group(1)} {m.group(2)} SET {re.sub(f'{m.group(2)}\\.', '', m.group(9))} FROM ({m.group(3)}) {m.group(4)} WHERE {m.group(2)}.{m.group(6)} = {m.group(4)}.{m.group(8)};",
+            query,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        
+        # 处理 unix_timestamp 语法
+        query = re.sub(r'unix_timestamp\(([^)]+)\)', r'EXTRACT(EPOCH FROM \1)', query)
+        # 处理 GROUP_CONCAT 函数参数类型
+        query = re.sub(r'GROUP_CONCAT\(([^)]+?)\)', r"STRING_AGG(\1::text, ',')", query)
+        # 处理 ROUND 函数参数类型
+        query = re.sub(r'ROUND\(([^,]+),\s*(\d+)\)', r'ROUND(\1::NUMERIC, \2)', query)
+        # 处理 COLLATE utf8mb4_general_ci 语法
+        query = re.sub(r'COLLATE\s+utf8mb4_general_ci\s*=', 'ILIKE ', query, flags=re.IGNORECASE)
+        query = query.replace('ILIKE  ', 'ILIKE ')
+        
         return query
     else:  # MySQL %s 
         return query
+
+def convert_row_to_dict(row, cursor_description=None):
+    """将数据库查询结果行转换为字典"""
+    if row is None:
+        return None
+    if isinstance(row, tuple) and cursor_description:
+        return dict(zip([desc[0] for desc in cursor_description], row))
+    elif hasattr(row, 'keys'):
+        return dict(row)
+    return row
+
+def format_datetime_fields(data: dict) -> dict:
+    """格式化日期时间字段"""
+    if data is None:
+        return None
+    formatted_data = {}
+    for key, value in data.items():
+        if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+            formatted_data[key] = value.strftime("%Y-%m-%d %H:%M:%S")
+        elif isinstance(value, Decimal):
+            formatted_data[key] = float(value)
+        else:
+            formatted_data[key] = value
+    return formatted_data

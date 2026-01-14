@@ -18,7 +18,7 @@ def send_email(to_email, subject, context):
     while retry:
         if (time.time() - start_time) > 22:
             logger.error(f"ERROR: Sending timeout! - {to_email} - {subject}")
-            return {"code": 200, "success": False, "msg": f"ERROR: Sending timeout"}
+            return {"code": 200, "success": False, "msg": "ERROR: Sending timeout"}
         try:
             today = time.strftime("%Y-%m-%d", time.localtime())
             logger.debug(f"today: {today}")
@@ -35,7 +35,7 @@ def send_email(to_email, subject, context):
             logger.debug(f"from_emails: {from_emails} {from_emails_len}")
             if from_emails_len < 1:
                 logger.error(f"ERROR: Not enough senders! - {to_email} - {subject}")
-                return {"code": 400, "success": False, "msg": f"ERROR: Not enough senders"}
+                return {"code": 400, "success": False, "msg": "ERROR: Not enough senders"}
                 break
             from_email=from_emails[0]
             logger.debug(f"from_email: {from_email}")
@@ -72,11 +72,11 @@ def send_email(to_email, subject, context):
 
             # 关闭SMTP连接
             smtpObj.quit()
-            return {"code": 200, "success": True, "msg": f"{to_email} sent successfully"}
+            return {"code": 200, "success": True, "msg": "Email sent successfully"}
             break
         except UnicodeEncodeError as e:  # 'ascii' codec can't encode character '\xec' in position 10: ordinal not in range(128)
             logger.error(f"{subject} {from_email} => {to_email} Email sent failed: {e}")
-            return {"code": 200, "success": False, "msg": f"ERROR: Email sent failed: {e}"}
+            return {"code": 200, "success": False, "msg": "Email sent failed"}
         except Exception as e:
             if str(e).find('sending limit') > 0:  # User xxx@xxx.net has exceeded its 24-hour sending limit. Messages to 500 recipients out of 500 allowed have been sent. Relay quota will reset in 18.49 hours.
                 # 发送失败添加到发件人黑名单
@@ -113,10 +113,10 @@ def send_email(to_email, subject, context):
                 logger.debug(f"EMAIL_BLACKLIST: {EMAIL_BLACKLIST}")
             elif str(e).find('too many messages sent') > 0:  # IP x.x.x.x temporarily rejected for too many messages sent. Please check any clients or devices that may be misconfigured, and try again later.
                 logger.error(f"{subject} {from_email} => {to_email} Email sent failed: {e}")
-                return {"code": 400, "success": False, "msg": f"ERROR: {e}"}
+                return {"code": 400, "success": False, "msg": "Email sent failed"}
             else:
                 logger.error(f"{subject} {from_email} => {to_email} Email sent failed: {e}")
-                return {"code": 400, "success": False, "msg": f"ERROR: {e}"}
+                return {"code": 400, "success": False, "msg": "Email sent failed"}
 
 def send_activation_mail(to_email, username, verify_url):
     body_text = f"This is the registration email, please open the link to continue. {verify_url}"

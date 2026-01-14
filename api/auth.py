@@ -9,18 +9,19 @@ from datetime import datetime as dt
 from typing import Dict
 from decimal import Decimal
 
-import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, EmailStr, Field
 
 from config import APP_CONFIG, KAFKA_CONFIG, DB_ENGINE, JWT_CONFIG
 from utils.bearertoken import md58, create_access_token, decode_access_token
+from utils.cache import del_redis_data, get_redis_data, set_redis_data
 from utils.captcha import validate_captcha
-from utils.db import get_db, format_query_for_db
+from utils.db import get_db, format_query_for_db, convert_row_to_dict, format_datetime_fields
 from utils.email import send_activation_mail, send_reset_mail
 from utils.i18n import get_text
 from utils.kafka.produce import kafka_send_produce
-from utils.local import generate_userid, generate_register_code
+from utils.mintnft import sync_nft_mintnft, async_nft_mintnft
+from utils.local import generate_userid, generate_registercode, hash_password, check_password, validate_password_strength, validate_email_format, verify_recaptcha_token
 from utils.security import get_current_userid, get_interface_userid
 from utils.log import log as logger
 
@@ -36,7 +37,7 @@ class AuthRegiterRequest(BaseModel):
     email: EmailStr | None = "xxxxxx@gmail.com"
     username: str
     password: str
-    register_code: str  # = Field(..., description="register code", pattern=r"(^[0-9a-zA-Z]{6}$){0,1}")
+    register_code: str = Field(..., description="register code", pattern=r"(^[0-9a-zA-Z]{5}$){0,1}")
     recaptcha_token: str
 @router.post("/register")  # {email,username,password,register_code,recaptcha_token}
 async def register(post_request: AuthRegiterRequest, background_tasks: BackgroundTasks, cursor=Depends(get_db)):
@@ -47,70 +48,56 @@ async def register(post_request: AuthRegiterRequest, background_tasks: Backgroun
         return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
 
     email = post_request.email
-    REGEX_PATTERN = "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7}$"
-    if not (re.search(REGEX_PATTERN, email)):  # 邮箱格式判断
+    if not validate_email_format(email):  # 邮箱格式判断
         logger.error(f"Invalid email: {email}")
-        return {"code": 401, "success": False, "msg": f"Invalid email"}
+        return {"code": 401, "success": False, "msg": get_text('INVALID_EMAIL')}
 
     username = post_request.username
     if len(username) < 6:
         logger.error(f"STATUS: 401 ERROR: Invalid username - {username}")
         return {"code": 401, "success": False, "msg": get_text('INVALID_USERNAME')}
     
-    password = post_request.password
-    if len(password) < 6:
-        logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
+    try:
+        password = validate_password_strength(post_request.password)
+    except ValueError:
         return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-    else:
-        ## 判断密码是不是32/64位哈希,不是则对密码格式进行校验 [ 长度至少8个; 必须含有:大写字母/小写字母/数字/特殊字符@#$%^&+= ]
-        if len(password) != 32 and len(password) != 64:
-            pattern = r'^.*(?=.{8,})(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).*$'
-            result = re.findall(pattern, password)
-            if not (result):
-                logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
-                return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-            ### 密码格式满足规则进行哈希运算
-            password = hashlib.sha256(str(password).encode()).hexdigest()[:20]
-        ## 判断密码是不是32/64位哈希,是则截取前20位作为密码
-        else:
-            password = password[:20]
 
     recaptcha_token = post_request.recaptcha_token
     logger.debug(f"recaptcha_token: {recaptcha_token}")
     ## captcha_token 图形验证码校验
-    if len(recaptcha_token) > 256 or (APP_CONFIG['level'] != 'debug'):  # debug不校验
-        res_captcha = validate_captcha(recaptcha_token)
-        if res_captcha is None:
-            logger.error(f"STATUS: 403 ERROR: Captcha exception")
-            return {"code": 403, "success": False, "msg": f"Captcha exception"}
-        elif res_captcha['success'] == False:
-            logger.error(f"STATUS: 401 ERROR: Invalid captcha - {res_captcha['error-codes'][0]}")
-            return {"code": 401, "success": False, "msg": f"Invalid captcha"}
+    if not verify_recaptcha_token(recaptcha_token):
+        logger.error(f"STATUS: 401 ERROR: Invalid captcha")
+        return {"code": 401, "success": False, "msg": get_text('INVALID_CAPTCHA')}
+
+    ## 屏蔽用户多次请求 10
+    redis_pending_withdraw = await get_redis_data(f"pending:{email}:register")
+    if redis_pending_withdraw:
+        return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
+    await set_redis_data(f"pending:{email}:register", value=1, ex=10)
 
     try:
         register_code = post_request.register_code
         if len(register_code) != 5:
             logger.error(f"STATUS: 401 ERROR: Invalid registercode - {register_code}")
-            return {"code": 401, "success": False, "msg": get_text('INVALID_REGISTER_CODE')}
-        else:
-            logger.debug(f"register_code: {register_code}")
-            ## 根据 register_code 查询注册码是否存在
-            check_query = "SELECT 1 FROM wenda_users WHERE register_code=%s AND userid='' "
-            values = (register_code,)
-            check_query = format_query_for_db(check_query)
-            logger.debug(f"check_query: {check_query} values: {values}")
-            await cursor.execute(check_query, values)
-            existing_registercode = await cursor.fetchone()
-            logger.debug(f"existing_registercode: {existing_registercode}")
-            if existing_registercode is None:  # 注册码不存在 或 已使用,注册无效
-                logger.error(f"STATUS: 401 ERROR: Invalid registercode {register_code}")
-                return {"code": 401, "success": False, "msg": get_text('INVALID_REGISTER_CODE')}
-            # 如果是元组，转换为字典
-            if isinstance(existing_registercode, tuple):
-                existing_registercode = dict(zip([desc[0] for desc in cursor.description], existing_registercode))
-            elif hasattr(existing_registercode, 'keys'):
-                existing_registercode = dict(existing_registercode)
-            logger.debug(f"existing_registercode: {existing_registercode}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_REGISTERCODE')}
+        logger.debug(f"register_code: {register_code}")
+        
+        ## 根据 register_code 查询注册码是否存在
+        check_query = "SELECT id FROM wenda_users WHERE register_code=%s AND userid='' "
+        values = (register_code,)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_registercode = await cursor.fetchone()
+        # logger.debug(f"existing_registercode: {existing_registercode}")
+        if existing_registercode is None:  # 注册码不存在 或 注册码已使用
+            logger.error(f"STATUS: 401 ERROR: Invalid registercode {register_code}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_REGISTERCODE')}
+        existing_registercode = convert_row_to_dict(existing_registercode, cursor.description)  # 转换字典
+        logger.debug(f"existing_registercode: {existing_registercode}")
+
+        register_id = existing_registercode['id']
+        logger.debug(f"register_id: {register_id}")
 
         # Check if the email already exists
         check_query = "SELECT email FROM wenda_users WHERE email=%s"
@@ -119,16 +106,12 @@ async def register(post_request: AuthRegiterRequest, background_tasks: Backgroun
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
-        logger.debug(f"existing_user: {existing_user}")
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
         logger.debug(f"existing_user: {existing_user}")
         if existing_user:
             logger.error(f"STATUS: 400 ERROR: Email already registered - {email}")
-            return {"code": 400, "success": False, "msg": "Email already registered"}
+            return {"code": 400, "success": False, "msg": get_text('ALREADY_EMAIL_REGISTERED')}
 
         # Check if the username already exists
         check_query = "SELECT username FROM wenda_users WHERE username=%s"
@@ -137,16 +120,12 @@ async def register(post_request: AuthRegiterRequest, background_tasks: Backgroun
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
-        logger.debug(f"existing_user: {existing_user}")
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
         logger.debug(f"existing_user: {existing_user}")
         if existing_user:
             logger.error(f"STATUS: 400 ERROR: Username already registered - {username}")
-            return {"code": 400, "success": False, "msg": "Username already registered"}
+            return {"code": 400, "success": False, "msg": get_text('ALREADY_USERNAME_REGISTERED')}
 
         ## userid生成逻辑
         userid = None
@@ -160,27 +139,23 @@ async def register(post_request: AuthRegiterRequest, background_tasks: Backgroun
             logger.debug(f"check_query: {check_query} values: {values}")
             await cursor.execute(check_query, values)
             existing_user = await cursor.fetchone()
-            logger.debug(f"existing_user: {existing_user}")
+            # logger.debug(f"existing_user: {existing_user}")
             if existing_user is None:
                 break
-            # 如果是元组，转换为字典
-            if isinstance(existing_user, tuple):
-                existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-            elif hasattr(existing_user, 'keys'):
-                existing_user = dict(existing_user)
+            existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
             logger.debug(f"existing_user: {existing_user}")
             retry_count += 1
         else:
             logger.error("Failed to generate a userid after maximum retries.")
-            return {"code": 500, "success": False, "msg": "userid generation failed"}
+            return {"code": 400, "success": False, "msg": "userid generation failed"}
         logger.debug(f"email: {email} => userid: {userid}")
         
-        hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        hashed_password = hash_password(password)
         logger.debug(f"username: {username} hashed_password: {hashed_password}")
 
         email_state = "UNVERIFIED"
-        update_query = "UPDATE wenda_users SET userid=%s, email=%s, username=%s, password=%s, state=%s, updated_time=NOW() WHERE register_code=%s AND userid='' "
-        values = (userid, email, username, hashed_password, email_state, register_code,)
+        update_query = "UPDATE wenda_users SET userid=%s,email=%s,username=%s,password=%s,state=%s,updated_time=NOW() WHERE id=%s AND userid='' "
+        values = (userid, email, username, hashed_password, email_state, register_id,)
         update_query = format_query_for_db(update_query)
         logger.debug(f"update_query: {update_query} values: {values}")
         await cursor.execute(update_query, values)
@@ -197,7 +172,7 @@ async def register(post_request: AuthRegiterRequest, background_tasks: Backgroun
                 "expire": expire_timestamp,
             })
         logger.debug(f"verify_token: {verify_token}")
-        verify_url = APP_CONFIG["apibase"] + "/api/validate/token?token=" + verify_token
+        verify_url = APP_CONFIG['apibase'] + "/api/validate/token?token=" + verify_token
         logger.info(f"verify_url: {verify_url}")
 
         ## Send activation email
@@ -261,39 +236,21 @@ async def login(post_request: AuthLoginRequest, cursor=Depends(get_db)):
         logger.error(f"STATUS: 401 ERROR: Invalid username - {username}")
         return {"code": 401, "success": False, "msg": get_text('INVALID_USERNAME')}
 
-    password = post_request.password
-    if len(password) < 6:
-        logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
+    try:
+        password = validate_password_strength(post_request.password)
+    except ValueError:
         return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-    else:
-        ## 判断密码是不是32/64位哈希,不是则对密码格式进行校验 [ 长度至少8个; 必须含有:大写字母/小写字母/数字/特殊字符@#$%^&+= ]
-        if len(password) != 32 and len(password) != 64:
-            pattern = r'^.*(?=.{8,})(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).*$'
-            result = re.findall(pattern, password)
-            if not (result):
-                logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
-                return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-            ### 密码格式满足规则进行哈希运算
-            password = hashlib.sha256(str(password).encode()).hexdigest()[:20]
-        ## 判断密码是不是32/64位哈希,是则截取前20位作为密码
-        else:
-            password = password[:20]
 
     recaptcha_token = post_request.recaptcha_token
+    logger.debug(f"recaptcha_token: {recaptcha_token}")
     ## captcha_token 图形验证码校验
-    if len(recaptcha_token) > 256 or (APP_CONFIG['level'] != 'debug'):  # debug不校验
-        res_captcha = validate_captcha(recaptcha_token)
-        if res_captcha is None:
-            logger.error(f"STATUS: 403 ERROR: Captcha exception")
-            return {"code": 403, "success": False, "msg": f"Captcha exception"}
-        elif res_captcha['success'] == False:
-            logger.error(f"STATUS: 401 ERROR: Invalid captcha - {res_captcha['error-codes'][0]}")
-            return {"code": 401, "success": False, "msg": f"Invalid captcha"}
+    if not verify_recaptcha_token(recaptcha_token):
+        logger.error(f"STATUS: 401 ERROR: Invalid captcha")
+        return {"code": 401, "success": False, "msg": get_text('INVALID_CAPTCHA')}
 
     try:
         # Check if the username or email already exists
-        REGEX_PATTERN = "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7}$"
-        if re.search(REGEX_PATTERN, username):  # 邮箱格式判断
+        if validate_email_format(username): # 邮箱格式判断
             check_query = "SELECT userid,username,password FROM wenda_users WHERE email=%s"
         else:
             check_query = "SELECT userid,username,password FROM wenda_users WHERE username=%s"
@@ -302,19 +259,15 @@ async def login(post_request: AuthLoginRequest, cursor=Depends(get_db)):
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
-        logger.debug(f"existing_user: {existing_user}")
+        # logger.debug(f"existing_user: {existing_user}")
         if existing_user is None:
             logger.error(f"STATUS: 401 ERROR: Invalid username - {username}")
             return {"code": 401, "success": False, "msg": get_text('INVALID_USERNAME')}
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
         logger.debug(f"existing_user: {existing_user}")
 
         logger.debug(f'username: {username} password: {password.encode("utf-8")} existing_user["password"]: {existing_user["password"].encode("utf-8")}')
-        if bcrypt.checkpw(password.encode("utf-8"), existing_user["password"].encode("utf-8"),):
+        if check_password(password, existing_user['password']):
             logger.debug(f"jwt_secret: {md58(existing_user['password'])}")
             expire_timestamp = int(time.time()) + JWT_CONFIG['expire']
             access_token = create_access_token({
@@ -357,44 +310,31 @@ async def forget_password(post_request: AuthForgetRequest, background_tasks: Bac
         return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
 
     email = post_request.email
-    REGEX_PATTERN = "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7}$"
-    if not (re.search(REGEX_PATTERN, email)):  # 邮箱格式判断
+    if not validate_email_format(email):  # 邮箱格式判断
         logger.error(f"Invalid email: {email}")
-        return {"code": 401, "success": False, "msg": f"Invalid email"}
+        return {"code": 401, "success": False, "msg": get_text('INVALID_EMAIL')}
 
     recaptcha_token = post_request.recaptcha_token
+    logger.debug(f"recaptcha_token: {recaptcha_token}")
     ## captcha_token 图形验证码校验
-    if len(recaptcha_token) > 256 or (APP_CONFIG['level'] != 'debug'):  # debug不校验
-        res_captcha = validate_captcha(recaptcha_token)
-        if res_captcha is None:
-            logger.error(f"STATUS: 403 ERROR: Captcha exception")
-            return {"code": 403, "success": False, "msg": f"Captcha exception"}
-        elif res_captcha['success'] == False:
-            logger.error(f"STATUS: 401 ERROR: Invalid captcha - {res_captcha['error-codes'][0]}")
-            return {"code": 401, "success": False, "msg": f"Invalid captcha"}
+    if not verify_recaptcha_token(recaptcha_token):
+        logger.error(f"STATUS: 401 ERROR: Invalid captcha")
+        return {"code": 401, "success": False, "msg": get_text('INVALID_CAPTCHA')}
 
     try:
         # Check if the email already exists
-        check_query = "SELECT username,updated_time,unix_timestamp(cooldown_time) as cooldown FROM wenda_users WHERE email=%s"
+        check_query = "SELECT username,updated_time as updated,unix_timestamp(cooldown_time) as cooldown FROM wenda_users WHERE email=%s"
         values = (email,)
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
-        logger.debug(f"existing_user: {existing_user}")
+        # logger.debug(f"existing_user: {existing_user}")
         if existing_user is None:
             logger.error(f"STATUS: 401 ERROR: Invalid email - {email}")
             return {"code": 401, "success": False, "msg": get_text('INVALID_EMAIL')}
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
-        for key, value in existing_user.items(): # DATETIME转字符串
-            if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
-                existing_user[key] = value.strftime("%Y-%m-%d %H:%M:%S")
-            elif isinstance(value, Decimal):
-                existing_user[key] = int(value)
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        existing_user = format_datetime_fields(existing_user)  # DATETIME转字符串
         logger.debug(f"existing_user: {existing_user}")
 
         if existing_user:
@@ -413,8 +353,8 @@ async def forget_password(post_request: AuthForgetRequest, background_tasks: Bac
                 ## 生成重置密码链接，并发送邮件
                 timestamp = APP_CONFIG['key']
                 logger.debug(f"timestamp: {timestamp}")
-                if existing_user['updated_time'] is not None:
-                    timestamp = existing_user['updated_time'] # str(dt.timestamp(existing_user['updated_time']))
+                if existing_user['updated'] is not None:
+                    timestamp = existing_user['updated'] # str(dt.timestamp(existing_user['updated']))
                     logger.debug(f"timestamp: {timestamp}")
                 logger.debug(f"email: {email}, key: {md58(timestamp)}")
                 expire_timestamp = int(time.time()) + JWT_CONFIG['expire']
@@ -471,12 +411,8 @@ async def forget_password(post_request: AuthForgetRequest, background_tasks: Bac
                     "data": "You will receive an email with the reset link if an account exists with the email provided. Remember to look in your spam or junk mail folder as well.",
                 }
             else:
-                logger.error(f"STATUS: 402 ERROR: Too frequent, please try again later - cooldownSecord: {3600 - cooldownSecord}")
-                return {
-                    "code": 402,
-                    "success": False,
-                    "msg": "Too frequent, please try again later",
-                }
+                logger.error(f"STATUS: 402 ERROR: Too many requests, please try again later. - cooldownSecord: {3600 - cooldownSecord}")
+                return { "code": 402, "success": False, "msg": "Too many requests, please try again later."}
         else:
             logger.error(f"STATUS: 401 ERROR: Invalid email - {email}")
             return {"code": 401, "success": False, "msg": get_text('INVALID_EMAIL')}
@@ -500,24 +436,10 @@ async def reset_password(post_request: AuthResetRequest, cursor=Depends(get_db))
 
     token = post_request.token
 
-    password = post_request.password_new
-    if len(password) < 6:
-        logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
+    try:
+        password_new = validate_password_strength(post_request.password_new)
+    except ValueError:
         return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-    else:
-        ## 判断密码是不是32/64位哈希,不是则对密码格式进行校验 [ 长度至少8个; 必须含有:大写字母/小写字母/数字/特殊字符@#$%^&+= ]
-        if len(password) != 32 and len(password) != 64:
-            pattern = r'^.*(?=.{8,})(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).*$'
-            result = re.findall(pattern, password)
-            if not (result):
-                logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
-                return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-            ### 密码格式满足规则进行哈希运算
-            password = hashlib.sha256(str(password).encode()).hexdigest()[:20]
-        ## 判断密码是不是32/64位哈希,是则截取前20位作为密码
-        else:
-            password = password[:20]
-    password_new = password
 
     try:
         payload = decode_access_token(token)
@@ -536,30 +458,22 @@ async def reset_password(post_request: AuthResetRequest, cursor=Depends(get_db))
                 return {"code": 401, "success": False, "msg": get_text('INVALID_JWT_TOKEN')}
 
             # 账户是否存在
-            check_query = "SELECT userid,username,updated_time FROM wenda_users WHERE email=%s"
+            check_query = "SELECT userid,username,updated_time as updated FROM wenda_users WHERE email=%s"
             values = (email,)
             check_query = format_query_for_db(check_query)
             logger.debug(f"check_query: {check_query} values: {values}")
             await cursor.execute(check_query, values)
             existing_user = await cursor.fetchone()
-            logger.debug(f"existing_user: {existing_user}")
-            # 如果是元组，转换为字典
-            if isinstance(existing_user, tuple):
-                existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-            elif hasattr(existing_user, 'keys'):
-                existing_user = dict(existing_user)
-            for key, value in existing_user.items(): # DATETIME转字符串
-                if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
-                    existing_user[key] = value.strftime("%Y-%m-%d %H:%M:%S")
-                elif isinstance(value, Decimal):
-                    existing_user[key] = int(value)
+            # logger.debug(f"existing_user: {existing_user}")
+            existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+            existing_user = format_datetime_fields(existing_user)  # DATETIME转字符串
             logger.debug(f"existing_user: {existing_user}")
 
             if existing_user:
                 # key 有效性校验
                 timestamp = APP_CONFIG['key']
-                if existing_user['updated_time'] is not None:
-                    timestamp = existing_user['updated_time'] # str(dt.timestamp(existing_user['updated_time']))
+                if existing_user['updated'] is not None:
+                    timestamp = existing_user['updated'] # str(dt.timestamp(existing_user['updated']))
                     logger.debug(f"timestamp: {timestamp}")
                 sql_key = md58(timestamp)
                 logger.debug(f"sql.key: {sql_key} jwt.key: {jwt_key}")
@@ -567,7 +481,7 @@ async def reset_password(post_request: AuthResetRequest, cursor=Depends(get_db))
                     return {"code": 401, "success": False, "msg": get_text('INVALID_JWT_TOKEN')}
 
                 logger.debug(f"username: {existing_user['username']} password_new: {password_new}")
-                hashed_password_new = bcrypt.hashpw(password_new.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                hashed_password_new = hash_password(password_new)
                 logger.debug(f"username: {existing_user['username']} hashed_password_new: {hashed_password_new}")
                 ## 更新账户密码
                 update_query = "UPDATE wenda_users set password=%s,updated_time=NOW(),cooldown_time=NOW() where userid=%s"
@@ -577,6 +491,9 @@ async def reset_password(post_request: AuthResetRequest, cursor=Depends(get_db))
                 await cursor.execute(update_query, values)
                 if DB_ENGINE == "sqlite": cursor.connection.commit()
                 else: await cursor.connection.commit()
+
+                ## redis 删除
+                await del_redis_data(f"box:{existing_user['userid']}:session")
 
                 return {
                     "code": 200,
@@ -606,26 +523,11 @@ async def change_password(post_request: AuthChangePasswordRequest,userid: Dict =
         logger.error(f"/api/auth/change-password - {userid} cursor: None")
         return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
 
-    password = post_request.password
-    password_new = post_request.password_new
-    if len(password) < 6 or len(password_new) < 6:
-        logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
+    try:
+        password = validate_password_strength(post_request.password)
+        password_new = validate_password_strength(post_request.password_new)
+    except ValueError:
         return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-    else:
-        ## 判断密码是不是32/64位哈希,不是则对密码格式进行校验 [ 长度至少8个; 必须含有:大写字母/小写字母/数字/特殊字符@#$%^&+= ]
-        if len(password) != 32 and len(password) != 64:
-            pattern = r'^.*(?=.{8,})(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).*$'
-            result = re.findall(pattern, password_new)
-            if not (result):
-                logger.error(f"STATUS: 401 ERROR: Invalid password_new - {password_new} {userid}")
-                return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-            ### 密码格式满足规则进行哈希运算
-            password = hashlib.sha256(str(password).encode()).hexdigest()[:20]
-            password_new = hashlib.sha256(str(password_new).encode()).hexdigest()[:20]
-        ## 判断密码是不是32/64位哈希,是则截取前20位作为密码
-        else:
-            password = password[:20]
-            password_new = password_new[:20]
 
     try:
         # Check if the userid already exists
@@ -635,18 +537,15 @@ async def change_password(post_request: AuthChangePasswordRequest,userid: Dict =
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
-        logger.debug(f"existing_user: {existing_user}")
+        # logger.debug(f"existing_user: {existing_user}")
         if existing_user is None:
             logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid}")
             return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        existing_user = format_datetime_fields(existing_user)  # DATETIME转字符串
         logger.debug(f"existing_user: {existing_user}")
 
-        if bcrypt.checkpw(password.encode("utf-8"), existing_user['password'].encode("utf-8"),):
+        if check_password(password, existing_user['password']):
             # 计算冷却时间，10分钟后才能再次更新
             cooldownSecord = 600
             if existing_user['cooldown'] is not None:
@@ -659,7 +558,7 @@ async def change_password(post_request: AuthChangePasswordRequest,userid: Dict =
                 cooldownSecord += 3570
             logger.debug(f"username: {existing_user['username']} cooldownSecord: {cooldownSecord}")
             if cooldownSecord >= 600:
-                hashed_password_new = bcrypt.hashpw(password_new.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+                hashed_password_new = hash_password(password_new)
                 logger.debug(f"username: {existing_user['username']} hashed_password_new: {hashed_password_new}")
                 ## 更新账户密码
                 update_query = "UPDATE wenda_users set password=%s,updated_time=NOW(),cooldown_time=NOW() where userid=%s"
@@ -670,6 +569,9 @@ async def change_password(post_request: AuthChangePasswordRequest,userid: Dict =
                 if DB_ENGINE == "sqlite": cursor.connection.commit()
                 else: await cursor.connection.commit()
 
+                ## redis 删除
+                await del_redis_data(f"box:{userid}:session")
+
                 return {
                     "code": 200,
                     "success": True,
@@ -677,12 +579,8 @@ async def change_password(post_request: AuthChangePasswordRequest,userid: Dict =
                     "data": "Password changed successfully, please login again.",
                 }
             else:
-                logger.error(f"STATUS: 402 ERROR: Too frequent, please try again later - cooldownSecord: {3600 - cooldownSecord}")
-                return {
-                    "code": 402,
-                    "success": False,
-                    "msg": "Too frequent, please try again later",
-                }
+                logger.error(f"STATUS: 402 ERROR: Too many requests, please try again later. - cooldownSecord: {3600 - cooldownSecord}")
+                return { "code": 402, "success": False, "msg": "Too many requests, please try again later."}
         else:
             logger.error(f"STATUS: 401 ERROR: Invalid password - {userid} {password} => {password_new}")
             return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
@@ -704,28 +602,13 @@ async def change_email(post_request: AuthChangeEmailRequest, userid: Dict = Depe
         return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
 
     email = post_request.email
-    REGEX_PATTERN = "^[a-zA-Z0-9_+&*-]+(?:\\.[a-zA-Z0-9_+&*-]+)*@(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,7}$"
-    if not (re.search(REGEX_PATTERN, email)):  # 邮箱格式判断
+    if not validate_email_format(email):  # 邮箱格式判断
         logger.error(f"Invalid email: {email} - {userid}")
-        return {"code": 401, "success": False, "msg": f"Invalid email"}
-
-    password = post_request.password
-    if len(password) < 6:
-        logger.error(f"STATUS: 401 ERROR: Invalid password - {password}")
+        return {"code": 401, "success": False, "msg": get_text('INVALID_EMAIL')}
+    try:
+        password = validate_password_strength(post_request.password)
+    except ValueError:
         return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-    else:
-        ## 判断密码是不是32/64位哈希,不是则对密码格式进行校验 [ 长度至少8个; 必须含有:大写字母/小写字母/数字/特殊字符@#$%^&+= ]
-        if len(password) != 32 and len(password) != 64:
-            pattern = r'^.*(?=.{8,})(?=.*\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*(),.?":{}|<>]).*$'
-            result = re.findall(pattern, password)
-            if not (result):
-                logger.error(f"STATUS: 401 ERROR: Invalid password - {password} {userid}")
-                return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
-            ### 密码格式满足规则进行哈希运算
-            password = hashlib.sha256(str(password).encode()).hexdigest()[:20]
-        ## 判断密码是不是32/64位哈希,是则截取前20位作为密码
-        else:
-            password = password[:20]
 
     try:
         # 查询邮箱是否已使用
@@ -735,54 +618,49 @@ async def change_email(post_request: AuthChangeEmailRequest, userid: Dict = Depe
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
-        logger.debug(f"existing_user: {existing_user}")
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
         logger.debug(f"existing_user: {existing_user}")
         if existing_user:
             if existing_user['userid'].strip() == userid:
-                logger.debug(f"The email is the same and does not need to be modified. - {existing_user['username']} - {email}")
+                logger.debug(f"Same email, no need to modify. - {existing_user['username']} - {email}")
                 return {
                     "code": 200,
                     "success": True,
                     "msg": "Success",
-                    "data": "The email is the same and does not need to be modified.",
+                    "data": "Same email, no need to modify.",
                 }
             logger.error(f"STATUS: 400 ERROR: Email already registered - {existing_user['username']} - {email}")
-            return {"code": 400, "success": False, "msg": "Email already registered"}
+            return {"code": 400, "success": False, "msg": get_text('ALREADY_EMAIL_REGISTERED')}
 
         # 查询token里的UID是否真实存在
-        check_query = "SELECT email,username,password,state FROM wenda_users WHERE userid=%s"
+        check_query = "SELECT email,username,password,address,state FROM wenda_users WHERE userid=%s"
         values = (userid,)
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
-        logger.debug(f"existing_user: {existing_user}")
+        # logger.debug(f"existing_user: {existing_user}")
         if existing_user is None:
             logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid} - {email}")
             return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
         logger.debug(f"existing_user: {existing_user}")
 
-        if bcrypt.checkpw(password.encode("utf-8"), existing_user['password'].encode("utf-8"),):
+        if check_password(password, existing_user['password']):
             if existing_user['state'] == "UNVERIFIED":
                 logger.debug(f"username: {existing_user['username']} - {existing_user['email']} => email: {email}")
                 ## 更新账户邮箱
-                update_query = "UPDATE wenda_users set email=%s, updated_time=NOW() where userid=%s"
+                update_query = "UPDATE wenda_users set email=%s,updated_time=NOW() where userid=%s"
                 values = (email, userid,)
                 update_query = format_query_for_db(update_query)
                 logger.debug(f"update_query: {update_query} values: {values}")
                 await cursor.execute(update_query, values)
                 if DB_ENGINE == "sqlite": cursor.connection.commit()
                 else: await cursor.connection.commit()
+
+                ## redis 删除
+                await del_redis_data(f"box:{userid}:session")
 
                 logger.debug(f"STATUS: 200 Success: Email changed successfully, please verify again. - {existing_user['username']} - {email}")
                 return {
@@ -792,8 +670,8 @@ async def change_email(post_request: AuthChangeEmailRequest, userid: Dict = Depe
                     "data": "Email changed successfully, please verify again.",
                 }
             else:
-                logger.error(f"STATUS: 400 ERROR: Email already verified - {existing_user['username']} - {existing_user['email']} => {email}")
-                return {"code": 400, "success": False, "msg": "Email already verified"}
+                logger.error(f"STATUS: 400 ERROR: Email already modified - {existing_user['username']} - {existing_user['email']} => {email}")
+                return {"code": 400, "success": False, "msg": get_text('ALREADY_EMAIL_MODIFIED')}
         else:
             logger.error(f"STATUS: 401 ERROR: Invalid password - {userid} {password} => {email}")
             return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
@@ -805,6 +683,7 @@ async def change_email(post_request: AuthChangeEmailRequest, userid: Dict = Depe
 # 查询2次 更新1次
 class AuthChangeUsernameRequest(BaseModel):
     username: str
+    password: str
 @router.post("/change-username")  # {username}
 async def change_username(post_request: AuthChangeUsernameRequest, userid: Dict = Depends(get_interface_userid), cursor=Depends(get_db)):
     """修改用户名"""
@@ -817,69 +696,554 @@ async def change_username(post_request: AuthChangeUsernameRequest, userid: Dict 
     if len(username) < 6:
         logger.error(f"STATUS: 401 ERROR: Invalid username - {username}")
         return {"code": 401, "success": False, "msg": get_text('INVALID_USERNAME')}
+    try:
+        password = validate_password_strength(post_request.password)
+    except ValueError:
+        return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
 
     try:
         ## 查询用户名是否已使用
-        check_query = "SELECT userid FROM wenda_users WHERE username=%s"
+        check_query = "SELECT userid,username FROM wenda_users WHERE username=%s"
         values = (username,)
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
         existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
         logger.debug(f"existing_user: {existing_user}")
         if existing_user:
-            logger.error(f"STATUS: 400 ERROR: Username already exists - {username}")
-            return {"code": 400, "success": False, "msg": "Username already exists"}
-        # 如果是元组，转换为字典
-        if isinstance(existing_user, tuple):
-            existing_user = dict(zip([desc[0] for desc in cursor.description], existing_user))
-        elif hasattr(existing_user, 'keys'):
-            existing_user = dict(existing_user)
-        logger.debug(f"existing_user: {existing_user}")
+            if existing_user['userid'].strip() == userid:
+                logger.debug(f"Same username, no need to modify. - {existing_user['username']} - {username}")
+                return {
+                    "code": 200,
+                    "success": True,
+                    "msg": "Success",
+                    "data": "Same username, no need to modify.",
+                }
+            logger.error(f"STATUS: 400 ERROR: Username already registered - {existing_user['username']} - {username}")
+            return {"code": 400, "success": False, "msg": get_text('ALREADY_USERNAME_REGISTERED')}
 
-        ## 查询用户基础信息
-        # Check if the userid already exists
-        check_query = "SELECT userid,username,email,state FROM wenda_users WHERE userid=%s"
+        # 查询token里的UID是否真实存在
+        check_query = "SELECT email,username,password,state FROM wenda_users WHERE userid=%s"
         values = (userid,)
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(check_query, values)
-        sessioninfo = await cursor.fetchone()
-        logger.debug(f"sessioninfo: {sessioninfo}")
+        existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        if existing_user is None:
+            logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid} - {username}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        logger.debug(f"existing_user: {existing_user}")
+
+        if check_password(password, existing_user['password']):
+            if existing_user['username'] != username:
+                ## 更新用户名
+                update_query = "UPDATE wenda_users set username=%s,updated_time=NOW() where userid=%s"
+                values = (username, userid,)
+                update_query = format_query_for_db(update_query)
+                logger.debug(f"update_query: {update_query} values: {values}")
+                await cursor.execute(update_query, values)
+                if DB_ENGINE == "sqlite": cursor.connection.commit()
+                else: await cursor.connection.commit()
+
+                ## redis 删除
+                await del_redis_data(f"box:{userid}:session")
+
+                logger.debug(f"STATUS: 200 Success: Username changed successfully, please verify again. - {username}")
+                return {
+                    "code": 200,
+                    "success": True,
+                    "msg": "Success",
+                    "data": "Username changed successfully, please verify again.",
+                }
+            else:
+                logger.error(f"STATUS: 400 ERROR: Username already modified - {existing_user['username']} - {existing_user['username']} => {username}")
+                return {"code": 400, "success": False, "msg": get_text('ALREADY_USERNAME_MODIFIED')}
+        else:
+            logger.error(f"STATUS: 401 ERROR: Invalid password - {userid} {password} => {username}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
+    except Exception as e:
+        logger.error(f"/api/auth/change-username - {userid} except ERROR: {str(e)}")
+        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+
+
+# 查询2次 更新1次
+class AuthChangeAddressRequest(BaseModel):
+    address: str | None = '0x***'
+    password: str
+@router.post("/change-address")  # {address}
+async def change_address(post_request: AuthChangeAddressRequest, userid: Dict = Depends(get_interface_userid), cursor=Depends(get_db)):
+    """修改地址"""
+    logger.info(f"POST /api/auth/change-address - {userid} - {post_request.address}")
+    if cursor is None:
+        logger.error(f"/api/auth/change-address - {userid} cursor: None")
+        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+
+    address = post_request.address
+    if not (len(address) == 42 and address[:2] == '0x'):  # 钱包地址判断
+        logger.error(f"STATUS: 401 ERROR: Invalid address - {address}")
+        return {"code": 401, "success": False, "msg": get_text('INVALID_ADDRESS')}
+    try:
+        password = validate_password_strength(post_request.password)
+    except ValueError:
+        return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
+
+    try:
+        ## 查询地址是否已使用
+        check_query = "SELECT userid,username FROM wenda_users WHERE address=%s"
+        values = (address,)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        logger.debug(f"existing_user: {existing_user}")
+        if existing_user:
+            if existing_user['userid'].strip() == userid:
+                logger.debug(f"Same address, no need to modify. - {existing_user['username']} - {address}")
+                return {
+                    "code": 200,
+                    "success": True,
+                    "msg": "Success",
+                    "data": "Same address, no need to modify.",
+                }
+            logger.error(f"STATUS: 400 ERROR: Address already registered - {existing_user['username']} - {address}")
+            return {"code": 400, "success": False, "msg": get_text('ALREADY_ADDRESS_REGISTERED')}
+
+        # 查询token里的UID是否真实存在
+        check_query = "SELECT email,username,password,address,state FROM wenda_users WHERE userid=%s"
+        values = (userid,)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        if existing_user is None:
+            logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid} - {address}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        logger.debug(f"existing_user: {existing_user}")
+
+        if check_password(password, existing_user['password']):
+            if existing_user['address'] != address:
+                ## 更新地址
+                update_query = "UPDATE wenda_users set address=%s,updated_time=NOW() where userid=%s"
+                values = (address, userid,)
+                update_query = format_query_for_db(update_query)
+                logger.debug(f"update_query: {update_query} values: {values}")
+                await cursor.execute(update_query, values)
+                if DB_ENGINE == "sqlite": cursor.connection.commit()
+                else: await cursor.connection.commit()
+
+                ## redis 删除
+                await del_redis_data(f"box:{userid}:session")
+
+                logger.debug(f"STATUS: 200 Success: Address changed successfully, please verify again. - {address}")
+                return {
+                    "code": 200,
+                    "success": True,
+                    "msg": "Success",
+                    "data": "Address changed successfully, please verify again.",
+                }
+            else:
+                logger.error(f"STATUS: 400 ERROR: Address already modified - {existing_user['username']} - {existing_user['address']} => {address}")
+                return {"code": 400, "success": False, "msg": get_text('ALREADY_ADDRESS_MODIFIED')}
+        else:
+            logger.error(f"STATUS: 401 ERROR: Invalid password - {userid} {password} => {address}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_PASSWORD')}
+    except Exception as e:
+        logger.error(f"/api/auth/change-address - {userid} except ERROR: {str(e)}")
+        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+
+
+# 查询1次
+@router.post("/send-verifyemail")
+async def send_verifyemail(background_tasks: BackgroundTasks, userid: Dict = Depends(get_interface_userid),cursor=Depends(get_db)):
+    """发送验证邮件"""
+    logger.info(f"POST /api/auth/send-verifyemail - {userid}")
+    if cursor is None:
+        logger.error(f"/api/auth/send-verifyemail - {userid} cursor: None")
+        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+
+    try:
+        ## 屏蔽用户多次请求 10
+        redis_pending_complete = await get_redis_data(f"pending:{userid}:send:verifyemail")
+        if redis_pending_complete:
+            return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
+        await set_redis_data(f"pending:{userid}:send:verifyemail", value=1, ex=10)
+
+        ## 根据 userid 查询是否已验证
+        check_query = "SELECT email,username,password,state FROM wenda_users WHERE userid = %s"
+        values = (userid,)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        logger.debug(f"existing_user: {existing_user}")
+
+        if existing_user:
+            ## 用户社交信息表 更新积分记录
+            if existing_user['state'] != 'UNVERIFIED':
+                # 邮件已验证
+                logger.error(f"STATUS: 400 ERROR: Email already verified - {existing_user['email']}")
+                return {"code": 400, "success": False, "msg": get_text('ALREADY_EMAIL_VERIFIED')}
+            else:
+                # 重发验证邮件
+                ## 生成确认注册链接，并发送邮件
+                logger.debug(f"userid: {userid}, username: {existing_user['username']}, secret: {md58(existing_user['password'])}")
+                expire_timestamp = int(time.time()) + JWT_CONFIG['expire']
+                verify_token = create_access_token({
+                        "userid": userid,
+                        "username": existing_user['username'],
+                        "secret": md58(existing_user['password']),
+                        "expire": expire_timestamp
+                    })
+                logger.debug(f"verify_token: {verify_token}")
+                verify_url = APP_CONFIG['apibase'] + '/api/validate/token?token=' + verify_token
+                logger.debug(f"verify_url: {verify_url}")
+
+                ## Send verify email
+                if APP_CONFIG['startup'] == 'kafka':
+                    if "mail" in KAFKA_CONFIG['topiclist']:  ## 发送到生产者队列 - 激活邮件 kafka-produce-topic-mail
+                        value = {
+                            "to_email": existing_user['email'],
+                            "subject": "activation",
+                            "context": verify_url,
+                            "username": existing_user['username'],
+                        }
+                        await kafka_send_produce("mail", value)
+                    else:  ## 添加到后台任务
+                        background_tasks.add_task(send_activation_mail,
+                                                  to_email=existing_user['email'],
+                                                  username=existing_user['username'],
+                                                  verify_url=verify_url,
+                                                  )
+                elif APP_CONFIG['startup'] == 'background':  ## 添加到后台任务
+                    background_tasks.add_task(send_activation_mail,
+                                              to_email=existing_user['email'],
+                                              username=existing_user['username'],
+                                              verify_url=verify_url,
+                                              )
+                elif APP_CONFIG['startup'] == 'direct':
+                    send_activation_mail(existing_user['username'], existing_user['email'], verify_url)
+
+                return {
+                    "success": True,
+                    "code": 200,
+                    "msg": "Success",
+                    "data": "You will receive an email with the reset link if an account exists with the email provided. Remember to look in your spam or junk mail folder as well."
+                }
+        else:
+            logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
+    except Exception as e:
+        logger.error(f"/api/auth/send-verifyemail - {userid} except ERROR: {str(e)}")
+        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+
+
+# 查询2次 更新1次
+class BindAddressRequest(BaseModel):
+    address: str | None = '0x***'
+@router.post("/bind-address")  # {address}
+async def bind_address(post_request: BindAddressRequest, userid: Dict = Depends(get_interface_userid), cursor=Depends(get_db)):
+    """绑定钱包地址"""
+    logger.info(f"POST /api/auth/bind-address - {userid} - {post_request.address}")
+    if cursor is None:
+        logger.error(f"/api/auth/bind-address - {userid} cursor: None")
+        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+
+    address = post_request.address
+    if not (len(address) == 42 and address[:2] == '0x'):  # 钱包地址判断
+        logger.error(f"STATUS: 401 ERROR: Invalid address - {address}")
+        return {"code": 401, "success": False, "msg": get_text('INVALID_ADDRESS')}
+    if not address:  # None
+        logger.error(f"STATUS: 401 ERROR: No wallet address - {address}")
+        return {"code": 401, "success": False, "msg": "No wallet address"}
+
+    try:
+        ## 屏蔽用户多次请求 10
+        redis_pending_complete = await get_redis_data(f"pending:{userid}:bind:address")
+        if redis_pending_complete:
+            return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
+        await set_redis_data(f"pending:{userid}:bind:address", value=1, ex=10)
+
+        address = address.lower()
+
+        # Check if the address already exists
+        check_query = "SELECT userid FROM wenda_users WHERE address COLLATE utf8mb4_general_ci=%s"
+        values = (address,)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_address = await cursor.fetchone()
+        # logger.debug(f"existing_address: {existing_address}")
+        existing_address = convert_row_to_dict(existing_address, cursor.description)  # 转换字典
+        logger.debug(f"existing_address: {existing_address}")
+        if existing_address:
+            if existing_address['userid'].strip() == userid:
+                logger.error(f"STATUS: 400 ERROR: The address has been bound - address: {address}")
+                return {"code": 400, "success": False, "msg": "The address has been bound"}
+            else:
+                logger.error(f"STATUS: 400 ERROR: The address has been bound by someone - userid: {userid}")
+                return {"code": 400, "success": False, "msg": "The address has been bound by someone"}
+
+        # Check if the userid already exists
+        check_query = "SELECT address FROM wenda_users WHERE userid=%s"
+        values = (userid,)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        logger.debug(f"existing_user: {existing_user}")
+        if existing_user:
+            if existing_user['address'] == address:
+                logger.error(f"STATUS: 400 ERROR: The user has bound an address - userid: {userid} address: {address}")
+                return {"code": 400, "success": False, "msg": "The user has bound an address"}
+            elif existing_user['address'] != '':
+                logger.error(f"STATUS: 400 ERROR: The user has already bound another address - userid: {userid} address: {address}")
+                return {"code": 400, "success": False, "msg": "The user has already bound another address"}
+
+        # 开始绑定逻辑
+        update_query = "UPDATE wenda_users set address=%s,updated_time=NOW() where userid=%s"
+        values = (address, userid,)
+        update_query = format_query_for_db(update_query)
+        logger.debug(f"update_query: {update_query} values: {values}")
+        await cursor.execute(update_query, values)
+        if DB_ENGINE == "sqlite": cursor.connection.commit()
+        else: await cursor.connection.commit()
+
+        ## redis 删除
+        await del_redis_data(f"box:{userid}:session")
+
+        return {
+            "code": 200,
+            "success": True,
+            "msg": "Success",
+            "data": "Successfully bound address"
+        }
+    except Exception as e:
+        logger.error(f"/api/auth/bind-address - {userid} except ERROR: {str(e)}")
+        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+
+
+@router.get("/mintnft") # ?chainid=84532
+async def address_mintnft_B0(chainid:int, background_tasks: BackgroundTasks, userid: Dict = Depends(get_interface_userid), cursor=Depends(get_db)):
+    """赠送B0级NFT一张:用于生成邀请码"""
+    logger.info(f"POST /api/auth/mintnft - {userid}")
+    if cursor is None:
+        logger.error(f"/api/auth/mintnft - {userid} cursor: None")
+        return {"code": 500, "success": False, "msg": "Server error"}
+
+    try:
+        ## B0铸造状态 - 0: 维护中   None/1: 允许B0铸造
+        box_mintnft_status = await get_redis_data(f"box:mintnft:status")
+        if box_mintnft_status == 0:
+            logger.error(f"Mintnft maintenance, will be restored later. - {userid}")
+            return {"code": 400, "success": False, "msg": "Mintnft maintenance, will be restored later."}
+
+        ## 屏蔽用户多次请求 600
+        redis_pending_withdraw = await get_redis_data(f"pending:{userid}:mintnft")
+        if redis_pending_withdraw:
+            return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
+        await set_redis_data(f"pending:{userid}:mintnft", value=1, ex=600)
+
+        # Check if the userid already exists
+        check_query = " SELECT address FROM wenda_users WHERE userid = %s "
+        values = (userid,)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        logger.debug(f"existing_user: {existing_user}")
+        if not existing_user:
+            logger.error(f"STATUS: 400 ERROR: User not found - {userid}")
+            return {"code": 400, "success": False, "msg": "User not found"}
+        ## 是否绑定地址
+        address = existing_user['address'].lower()
+        logger.debug(f"address: {address}")
+        if address == '':
+            logger.error(f"STATUS: 400 ERROR: Please bind the address first - {userid}")
+            return {"code": 400, "success": False, "msg": "Please bind the address first"}
+        
+        ## 查询NFT持有状态
+        # Check if the address already exists
+        check_query = " SELECT id FROM wenda_nft_onchain WHERE tx_chainid = %s and tx_address COLLATE utf8mb4_general_ci = %s AND status=1 order by id desc limit 1 "
+        values = (chainid, address)
+        check_query = format_query_for_db(check_query)
+        logger.debug(f"check_query: {check_query} values: {values}")
+        await cursor.execute(check_query, values)
+        existing_user = await cursor.fetchone()
+        # logger.debug(f"existing_user: {existing_user}")
+        existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
+        logger.debug(f"existing_user: {existing_user}")
+        if existing_user:
+            logger.error(f"STATUS: 400 ERROR: The address already has NFT - {userid}")
+            return {"code": 400, "success": False, "msg": "The address already has NFT"}
+
+        ## 开始铸造NFT B0
+
+        # 发送到 kafka
+        value = {
+            "userid": userid,
+            "chainid": chainid,
+            "address": address,
+        }
+        if APP_CONFIG['startup'] == 'kafka':
+            if "mintnft" in KAFKA_CONFIG['topiclist']:  ## 发送到生产者队列 - 划转 kafka-produce-topic-mintnft
+                await kafka_send_produce("mintnft", value)
+            else:  ## 添加到后台任务
+                background_tasks.add_task(sync_nft_mintnft, value=value)
+        elif APP_CONFIG['startup'] == 'background':  ## 添加到后台任务
+            background_tasks.add_task(sync_nft_mintnft, value=value)
+        elif APP_CONFIG['startup'] == 'direct':  ## 直接调用
+            await async_nft_mintnft(value)
+        
+        ## redis 删除
+        await del_redis_data(f"box:{userid}:session")
+        
+        return {
+            "code": 200,
+            "success": True,
+            "msg": "Success",
+            "data": "Waiting for minting to complete"
+        }
+    except Exception as e:
+        logger.error(f"/api/auth/mintnft - {userid} except ERROR: {str(e)}")
+        return {"code": 500, "success": False, "msg": "Server error"}
+
+
+@router.get("/referral-history")  # ?page1&limit=10
+async def referral_history(page: int | None = 1, limit: int | None = 10, userid: Dict = Depends(get_interface_userid), cursor=Depends(get_db)):
+    """钱包邀请记录"""
+    logger.info(f"POST /api/auth/referral-history - {userid}")
+    if cursor is None:
+        logger.error(f"/api/auth/referral-history - {userid} cursor: None")
+        return {"code": 500, "success": False, "msg": "Server error"}
+
+    try:
+        ## 查询用户基础信息
+        sessioninfo = await get_redis_data(f"box:{userid}:session")
+        logger.debug(f"redis sessioninfo: {sessioninfo}")
         if sessioninfo is None:
-            logger.error(f"STATUS: 401 ERROR: Invalid data - {userid}")
-            return {"code": 401, "success": False, "msg": get_text('INVALID_DATA')}
-        # 如果是元组，转换为字典
-        if isinstance(sessioninfo, tuple):
-            sessioninfo = dict(zip([desc[0] for desc in cursor.description], sessioninfo))
-        elif hasattr(sessioninfo, 'keys'):
-            sessioninfo = dict(sessioninfo)
-        logger.debug(f"sessioninfo: {sessioninfo}")
+            # Check if the userid already exists
+            check_query = "SELECT userid,username,email,address,social_dc,social_x,state FROM wenda_users WHERE userid=%s"
+            values = (userid,)
+            check_query = format_query_for_db(check_query)
+            logger.debug(f"check_query: {check_query} values: {values}")
+            await cursor.execute(check_query, values)
+            sessioninfo = await cursor.fetchone()
+            # logger.debug(f"sessioninfo: {sessioninfo}")
+            sessioninfo = convert_row_to_dict(sessioninfo, cursor.description)  # 转换字典
+            logger.debug(f"sessioninfo: {sessioninfo}")
+            ## redis 设置 sessioninfo
+            await set_redis_data(f"box:{userid}:session", value=json.dumps(sessioninfo), ex=300)
+        if sessioninfo is None:
+            logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
 
-        if sessioninfo['username'] != username:
-            ## 更新用户名
-            update_query = "UPDATE wenda_users set username=%s, updated_time=NOW() where userid=%s"
-            values = (username, userid,)
-            update_query = format_query_for_db(update_query)
-            logger.debug(f"update_query: {update_query} values: {values}")
-            await cursor.execute(update_query, values)
-            if DB_ENGINE == "sqlite": cursor.connection.commit()
-            else: await cursor.connection.commit()
-
-            logger.debug(f"STATUS: 200 Success: Username changed successfully, please verify again. - {username}")
+        address = sessioninfo.get('address', '').lower()
+        if not address or len(address) != 42 or address[:2] != '0x':
             return {
                 "code": 200,
                 "success": True,
                 "msg": "Success",
-                "data": "Username changed successfully, please verify again.",
+                "data": [],
+                "total": 0,
             }
-        else:
-            logger.error(f"STATUS: 400 ERROR: Username already modified - {username}")
-            return {"code": 400, "success": False, "msg": "Username already modified"}
+        logger.info(f"address: {address}")
 
+        # referral_count
+        referral_count = await get_redis_data(f"box:{userid}:referral:count")
+        logger.debug(f"redis referral_count: {referral_count}")
+        if not referral_count:
+            ## 根据address查询子账号购买数量
+            check_query = """
+                            SELECT 
+                                COUNT(DISTINCT tx_hash) as len
+                            FROM wenda_nft_onchain 
+                            WHERE par_address COLLATE utf8mb4_general_ci = %s AND status=1 AND nft_boxid>0
+                            """
+            values = (address,)
+            check_query = format_query_for_db(check_query)
+            logger.debug(f"check_query: {check_query} values: {values}")
+            await cursor.execute(check_query, values)
+            referral_info = await cursor.fetchone()
+            # logger.debug(f"mysql referral_info: {referral_info}")
+            referral_info = convert_row_to_dict(referral_info, cursor.description)  # 转换字典
+            logger.debug(f"mysql referral_info: {referral_info}")
+            referral_count = int(referral_info['len']) if referral_info else 0
+            logger.debug(f"mysql referral_count: {referral_count}")
+            ## redis 设置 referral_points
+            await set_redis_data(f"box:{userid}:referral:count", value=referral_count, ex=300)
+        if referral_count == 0:
+            return {
+                "code": 200,
+                "success": True,
+                "msg": "Success",
+                "data": [],
+                "total": 0,
+            }
+        
+        if page == 0: page = 1
+        # referral_list
+        referral_list = await get_redis_data(f"box:{userid}:referral:list:{page}:{limit}")
+        logger.debug(f"redis referral_list: {referral_list}")
+        if not referral_list:
+            ## 根据address查询子账号购买金额
+            check_query = """
+                            SELECT 
+                                MIN(nft_boxid) as type,
+                                MIN(tx_date) as date,
+                                MIN(tx_address) as address,
+                                MIN(tx_chainid) as chainid,
+                                tx_hash,
+                                ROUND(SUM(tx_amount_eth),6) as amount_eth,
+                                ROUND(SUM(tx_amount_sxp),6) as amount_sxp,
+                                COUNT(tx_hash) as count
+                            FROM wenda_nft_onchain 
+                            WHERE par_address COLLATE utf8mb4_general_ci = %s AND status=1 AND nft_boxid>0
+                            GROUP BY tx_hash
+                            ORDER BY date DESC
+                            LIMIT %s, %s
+                            """
+            values = (address, (page - 1) * limit, limit,)
+            check_query = format_query_for_db(check_query)
+            logger.debug(f"check_query: {check_query} values: {values}")
+            await cursor.execute(check_query, values)
+            referral_list = await cursor.fetchall()
+            # logger.debug(f"mysql referral_list: {referral_list}")
+            if isinstance(referral_list, (list, tuple)) and len(referral_list) > 0: # 转换字典列表
+                converted_list = []
+                for row in referral_list: # 将每一行转换为字典
+                    row_dict = convert_row_to_dict(row, cursor.description)  # 转换字典
+                    formatted_row = format_datetime_fields(row_dict)  # DATETIME转字符串
+                    converted_list.append(formatted_row)
+                referral_list = converted_list
+            logger.debug(f"mysql referral_list: {referral_list}")
+            
+            ## redis 设置 referral_list
+            await set_redis_data(f"box:{userid}:referral:list:{page}:{limit}", value=json.dumps(referral_list), ex=300)
+        
+        return {
+            "code": 200,
+            "success": True,
+            "msg": "Success",
+            "data": referral_list if referral_list else [],
+            "total": referral_count,
+        }
     except Exception as e:
-        logger.error(f"/api/auth/change-username - {userid} except ERROR: {str(e)}")
-        return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
+        logger.error(f"/api/auth/referral-history - {userid} except ERROR: {str(e)}")
+        return {"code": 500, "success": False, "msg": "Server error"}
 
 
 # 查询2次
@@ -893,26 +1257,26 @@ async def session(userid: Dict = Depends(get_current_userid), cursor=Depends(get
 
     try:
         ## 查询用户基础信息
-        # Check if the userid already exists
-        check_query = "SELECT userid,username,email,state FROM wenda_users WHERE userid=%s"
-        values = (userid,)
-        check_query = format_query_for_db(check_query)
-        logger.debug(f"check_query: {check_query} values: {values}")
-        await cursor.execute(check_query, values)
-        sessioninfo = await cursor.fetchone()
-        logger.debug(f"sessioninfo: {sessioninfo}")
-        if sessioninfo is None: # 2
-            logger.error(f"STATUS: 401 ERROR: Invalid data - {userid}")
-            return {"code": 401, "success": False, "msg": get_text('INVALID_DATA')}
-        # 如果是元组，转换为字典
-        if isinstance(sessioninfo, tuple):
-            sessioninfo = dict(zip([desc[0] for desc in cursor.description], sessioninfo))
-        elif hasattr(sessioninfo, 'keys'):
-            sessioninfo = dict(sessioninfo)
-        logger.debug(f"sessioninfo: {sessioninfo}")
+        sessioninfo = await get_redis_data(f"box:{userid}:session")
+        logger.debug(f"redis sessioninfo: {sessioninfo}")
+        if sessioninfo is None:
+            # Check if the userid already exists
+            check_query = "SELECT userid,username,email,address,social_dc,social_x,state FROM wenda_users WHERE userid=%s"
+            values = (userid,)
+            check_query = format_query_for_db(check_query)
+            logger.debug(f"check_query: {check_query} values: {values}")
+            await cursor.execute(check_query, values)
+            sessioninfo = await cursor.fetchone()
+            # logger.debug(f"sessioninfo: {sessioninfo}")
+            sessioninfo = convert_row_to_dict(sessioninfo, cursor.description)  # 转换字典
+            logger.debug(f"sessioninfo: {sessioninfo}")
+            ## redis 设置 sessioninfo
+            await set_redis_data(f"box:{userid}:session", value=json.dumps(sessioninfo), ex=300)
+        if sessioninfo is None:
+            logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid}")
+            return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
         
-        if sessioninfo:
-            return {
+        return {
                 "code": 200,
                 "success": True,
                 "msg": "Success",
@@ -920,11 +1284,11 @@ async def session(userid: Dict = Depends(get_current_userid), cursor=Depends(get
                     "uid": sessioninfo['userid'],
                     "name": sessioninfo['username'],
                     "email": sessioninfo['email'],
+                    "address": sessioninfo['address'],
+                    "social_dc": sessioninfo['social_dc'],
+                    "social_x": sessioninfo['social_x'],
                 },
             }
-        else:
-            logger.error(f"STATUS: 401 ERROR: Invalid userid - {userid}")
-            return {"code": 401, "success": False, "msg": get_text('INVALID_USERID')}
     except Exception as e:
         logger.error(f"/api/auth/session - {userid} except ERROR: {str(e)}")
         return {"code": 500, "success": False, "msg": get_text('SERVER_ERROR')}
