@@ -10,9 +10,9 @@ from decimal import Decimal
 from contextlib import asynccontextmanager
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator
-from fastapi import HTTPException
+from loguru import logger
+# from fastapi import HTTPException
 
-from utils.log import log as logger
 from config import DB_ENGINE, SQLITE_URL, MYSQL_URL, DB_MAXCONNECT, POSTGRESQL_URL, BASE_DIR
 
 class Database(ABC):
@@ -60,6 +60,7 @@ class SQLiteDatabase(Database):
                 await self.create_tables()
         except Exception as e:
             logger.error(f"Failed to connect to SQLite database: {e}")
+            raise
             raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
 
     async def _initialize_database(self):
@@ -187,6 +188,7 @@ class SQLiteDatabase(Database):
             logger.error(f"Failed to create tables: {e}")
             if should_commit:
                 await conn.rollback()
+            raise
             raise HTTPException(status_code=500, detail="Failed to create tables")
         finally:
             if should_commit:
@@ -274,6 +276,7 @@ class MySQLDatabase(Database):
         except aiomysql.Error as e:
             logger.error(f"Failed to create MySQL database: {e}")
             # return False
+            raise
             raise HTTPException(status_code=500, detail="Failed to create database")
 
     async def create_tables(self) -> None:
@@ -413,6 +416,7 @@ class MySQLDatabase(Database):
                     
         except aiomysql.Error as e:
             logger.error(f"Failed to create or check table: {e}")
+            raise
             raise HTTPException(status_code=500, detail="Failed to create or check table")
 
     async def disconnect(self) -> None:
@@ -509,6 +513,7 @@ class PostgreSQLDatabase(Database):
         except Exception as e:
             logger.error(f"Failed to create PostgreSQL database: {e}")
             # return False
+            raise
             raise HTTPException(status_code=500, detail="Failed to create database")
 
     async def create_tables(self) -> None:
@@ -667,6 +672,7 @@ class PostgreSQLDatabase(Database):
                 
         except Exception as e:
             logger.error(f"Failed to create or check table: {e}")
+            raise
             raise HTTPException(status_code=500, detail="Failed to create or check table")
 
     async def disconnect(self) -> None:
@@ -826,16 +832,16 @@ async def get_db() -> AsyncGenerator:
                 cursor = PostgreSQLCursor(conn)
                 yield cursor
     except Exception as e:
-        logger.error(f"Database connection error: {str(e)} | Engine: {DB_ENGINE} | URL: {database.url}")
-        raise HTTPException(status_code=500, detail="Database connection error")
+            logger.error(f"Database connection error: {str(e)} | Engine: {DB_ENGINE} | URL: {database.url}")
+            raise
+            raise HTTPException(status_code=500, detail="Database connection error")
 
 @asynccontextmanager
 async def get_db_app():
     async with database.get_connection() as conn:
-        # async with conn.cursor() as cursor:
-        #     yield cursor
         if isinstance(database, SQLiteDatabase):  # SQLite 使用不同的游标获取方式
-            yield conn
+            async with conn.cursor() as cursor:
+                yield cursor
         elif isinstance(database, MySQLDatabase):  # MySQL 使用不同的游标获取方式
             async with conn.cursor() as cursor:
                 yield cursor
@@ -854,7 +860,8 @@ def format_query_for_db(query: str) -> str:
         query = re.sub(r'unix_timestamp\(([^)]+)\)', r'strftime(\1)', query)
         
         # 处理 COLLATE utf8mb4_general_ci 语法
-        query = re.sub(r'COLLATE\s+utf8mb4_general_ci', 'COLLATE NOCASE', query, flags=re.IGNORECASE)
+        query = re.sub(r'\bCOLLATE\s+utf8mb4_general_ci\b', 'COLLATE NOCASE', query, flags=re.IGNORECASE)
+        # query = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s+COLLATE\s+utf8mb4_general_ci\s+=\s+(%s)', r'LOWER(\1) = LOWER(\2)', query, flags=re.IGNORECASE)
         
         return query
     elif DB_ENGINE == "postgresql": # 将 %s 替换为 $1, $2, $3...
@@ -918,3 +925,9 @@ def format_datetime_fields(data: dict) -> dict:
         else:
             formatted_data[key] = value
     return formatted_data
+
+if __name__ == "__main__":
+    query='SELECT COUNT(id) as len FROM wenda_nft_onchain WHERE tx_address COLLATE utf8mb4_general_ci=%s AND tx_chainid=%s AND status=1'
+    logger.info(f"Formatted query: {query}")
+    query1 = format_query_for_db(query)
+    logger.info(f"Formatted query1: {query1}")

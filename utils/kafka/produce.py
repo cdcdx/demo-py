@@ -1,11 +1,11 @@
 import json
 import asyncio
+from loguru import logger
 from aiokafka import AIOKafkaProducer
 from aiokafka.errors import KafkaError
 from aiokafka.errors import UnknownMemberIdError
 from aiokafka.errors import UnknownTopicOrPartitionError
 
-from utils.log import log as logger
 from config import KAFKA_CONFIG
 
 KAFKA_BOOTSTRAP_SERVERS=KAFKA_CONFIG['address']

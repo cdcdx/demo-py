@@ -2,12 +2,12 @@ import os
 import json
 import time
 import requests
+from loguru import logger
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 
-from config import WEB3_NETWORK, WEB3_CONFIG, WEB3_WHITE_PRIKEY
 from utils.i18n import get_text
-from utils.log import log as logger
+from config import WEB3_NETWORK, WEB3_CONFIG, WEB3_WHITE_PRIKEY
 
 # ---------------------------------------
 

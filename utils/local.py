@@ -20,10 +20,10 @@ from pathlib import Path
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi.responses import StreamingResponse
+from loguru import logger
 
 from utils.captcha import validate_captcha
-from utils.log import log as logger
-from config import *
+from config import APP_CONFIG, BASE_DIR, SSL_CERTFILE, SSL_KEYFILE
 
 # 2FA
 import pyotp

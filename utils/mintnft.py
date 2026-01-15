@@ -1,12 +1,12 @@
 import asyncio
+from loguru import logger
 
-from config import APP_CONFIG, DB_ENGINE
 from utils.cache import get_redis_data, set_redis_data, del_redis_data
 from utils.db import get_db_app, format_query_for_db, convert_row_to_dict
 from utils.i18n import get_text
 from utils.local import generate_referralcode
 from utils.web3_tools import contract_nftmint
-from utils.log import log as logger
+from config import APP_CONFIG, DB_ENGINE
 
 # 异步: 直接调用  direct kafka
 async def async_nft_mintnft(value):
@@ -23,14 +23,14 @@ async def async_nft_mintnft(value):
     async with get_db_app() as cursor:
 
         ## 从链上查询NFT数量
-        check_query = " SELECT COUNT(id) as len FROM wenda_nft_onchain WHERE tx_address COLLATE utf8mb4_general_ci =%s AND tx_chainid=%s AND status=1"
+        check_query = " SELECT COUNT(id) as len FROM wenda_nft_onchain WHERE tx_address COLLATE utf8mb4_general_ci=%s AND tx_chainid=%s AND status=1"
         # 格式化查询语句以适应当前数据库类型
         values = (address, chainid,)
         formatted_check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
         await cursor.execute(formatted_check_query, values)
         existing_record = await cursor.fetchone()
-        # logger.debug(f"existing_record: {existing_record}")
+        logger.debug(f"existing_record: {existing_record}")
         existing_record = convert_row_to_dict(existing_record, cursor.description)  # 转换字典
         logger.debug(f"existing_record: {existing_record}")
         nft_count = existing_record['len'] if existing_record else 0
@@ -98,7 +98,7 @@ def sync_nft_mintnft(value):
             logger.debug(f"check_query: {check_query} values: {values}")
             await cursor.execute(formatted_check_query, values)
             existing_record = await cursor.fetchone()
-            # logger.debug(f"existing_record: {existing_record}")
+            logger.debug(f"existing_record: {existing_record}")
             existing_record = convert_row_to_dict(existing_record, cursor.description)  # 转换字典
             logger.debug(f"existing_record: {existing_record}")
             nft_count = existing_record['len'] if existing_record else 0

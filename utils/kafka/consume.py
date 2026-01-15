@@ -8,10 +8,9 @@ from aiokafka.errors import UnknownMemberIdError
 from aiokafka.errors import UnknownTopicOrPartitionError
 from loguru import logger
 
-from config import KAFKA_CONFIG, APP_CONFIG
 from utils.email import send_normal_mail, send_activation_mail, send_reset_mail, send_newpasswd_mail
 from utils.mintnft import async_nft_mintnft
-# from utils.log import log as logger
+from config import KAFKA_CONFIG
 
 KAFKA_BOOTSTRAP_SERVERS = KAFKA_CONFIG['address']
 KAFKA_TOPIC = KAFKA_CONFIG['topic']
