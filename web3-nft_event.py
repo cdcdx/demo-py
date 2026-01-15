@@ -16,6 +16,7 @@ from decimal import Decimal
 
 from config import DB_ENGINE
 from utils.cache import get_redis_data, set_redis_data, del_redis_data
+from utils.contract_abi import contract_abi_nftmint
 from utils.db import get_db_app, format_query_for_db, convert_row_to_dict
 from utils.local import generate_referralcode
 from utils.web3_tools import make_request, get_web3_config_by_chainid, get_web3_config_by_network
@@ -27,23 +28,6 @@ from utils.log import log as logger
 
 hash_file = 'hash_boxnft'
 hash_index = 0
-
-# ABI
-contract_abi_nftmint = [
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "address", "name": "buyer", "type": "address"},
-            {"indexed": True, "internalType": "address", "name": "superior", "type": "address"},
-            {"indexed": False, "internalType": "uint8", "name": "boxId", "type": "uint8"},
-            {"indexed": False, "internalType": "uint256", "name": "ethAmount", "type": "uint256"},
-            {"indexed": False, "internalType": "uint256", "name": "sxpAmount", "type": "uint256"},
-            {"indexed": False, "internalType": "uint256[]", "name": "tokenIds", "type": "uint256[]"}
-        ],
-        "name": "NFTPurchased",
-        "type": "event"
-    }
-]
 
 # ------------------------------------------------------------------------------------
 
@@ -169,13 +153,12 @@ async def get_eth_price() -> float:
 async def listen_events_start(web3_config, hash_index):
     global hash_file
 
-    config_network = web3_config['network'] # network
     config_chainid = web3_config['chain_id'] # chain_id
 
+    # web3
     web3_rpc_url = web3_config['server'] # rpc
     if not web3_rpc_url:
         raise Exception("Web3 rpc not found")
-    
     web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
     if config_chainid in [56, 97]:
         web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
@@ -385,11 +368,12 @@ async def listen_events(chainid):
 
     hash_file=f"{config_chainid}_boxnft"
 
+    # web3
     web3_rpc_url = web3_config['server'] # rpc
     if not web3_rpc_url:
         raise Exception("Web3 rpc not found")
     web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
-    if chainid in [1, 11155111, 8453, 84532, 56, 97]:
+    if chainid in [56, 97]:
         web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     while not web3_is_connected_with_retry(web3_obj):
         logger.debug(f"Ooops! Failed to eth.is_connected. {web3_rpc_url}")

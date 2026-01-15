@@ -6,6 +6,7 @@ from loguru import logger
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 
+from utils.contract_abi import contract_abi_nftmint
 from utils.i18n import get_text
 from config import WEB3_NETWORK, WEB3_CONFIG, WEB3_WHITE_PRIKEY
 
@@ -45,22 +46,6 @@ def make_request(hash_url, params):
         data = response.json()
         # print(f"data: {data}")
         return data
-
-# ---------------------------------------
-
-# USD ABI
-contract_abi_nftmint = [
-    {
-        "inputs": [
-            {"internalType": "address","name": "buyer","type": "address"},
-            {"internalType": "address","name": "superior","type": "address"}
-        ],
-        "name": "genesis",
-        "outputs": [],
-        "stateMutability": "payable",
-        "type": "function"
-    }
-]
 
 # ------------------------------------------------------------------------------------
 
@@ -184,12 +169,14 @@ def get_web3_client(chainid):
         logger.error(f"STATUS: 400 ERROR: Web3 chainid does not match - chainid: {chainid} != config_chainid: {config_chainid}")
         raise Exception("Web3 chainid does not match")
     
-    web3_rpc_url = web3_config['server']
+    # web3
+    web3_rpc_url = web3_config['server'] # rpc
     if not web3_rpc_url:
         raise Exception("Web3 rpc not found")
     web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
     if chainid in [56, 97]:
         web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    # 连接rpc节点
     if not web3_obj.is_connected():
         logger.error(f"Unable to connect to the network: {web3_rpc_url}")
         web3_rpc_url = web3_config['rpc']
@@ -264,6 +251,13 @@ def contract_nftmint(receiver_address, chainid=0):
         receiver_address = Web3.to_checksum_address(receiver_address)
         cool_address = web3_obj.to_checksum_address(web3_config['cool_address'])
         logger.info(f"给谁铸造: {receiver_address} 上级是谁: {cool_address}")
+
+        ## 是否存在NFT
+        is_nft = nftmint_contract.functions.userPurchases( receiver_address ).call()
+        logger.debug(f"is_nft: {is_nft}")
+        if is_nft > 0:
+            logger.error(f"STATUS: 400 ERROR: The address already has NFT - {receiver_address}")
+            return False, {"tx_hash": "", "msg": "The address already has NFT"}
 
         # 使用公共函数构建基础交易参数
         base_transaction = build_base_transaction(web3_obj, sender_address, config_chainid)

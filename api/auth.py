@@ -8,6 +8,8 @@ import datetime
 from datetime import datetime as dt
 from typing import Dict
 from decimal import Decimal
+from web3 import Web3
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, EmailStr, Field
@@ -16,6 +18,7 @@ from config import APP_CONFIG, KAFKA_CONFIG, DB_ENGINE, JWT_CONFIG
 from utils.bearertoken import md58, create_access_token, decode_access_token
 from utils.cache import del_redis_data, get_redis_data, set_redis_data
 from utils.captcha import validate_captcha
+from utils.contract_abi import contract_abi_nftmint
 from utils.db import get_db, format_query_for_db, convert_row_to_dict, format_datetime_fields
 from utils.email import send_activation_mail, send_reset_mail
 from utils.i18n import get_text
@@ -1093,7 +1096,7 @@ async def address_mintnft_B0(chainid:int, background_tasks: BackgroundTasks, use
         if address == '':
             logger.error(f"STATUS: 400 ERROR: Please bind the address first - {userid}")
             return {"code": 400, "success": False, "msg": "Please bind the address first"}
-        
+
         ## 查询NFT持有状态
         # Check if the address already exists
         check_query = " SELECT id FROM wenda_nft_onchain WHERE tx_chainid=%s and tx_address COLLATE utf8mb4_general_ci=%s AND status=1 order by id desc limit 1 "
@@ -1106,6 +1109,40 @@ async def address_mintnft_B0(chainid:int, background_tasks: BackgroundTasks, use
         existing_user = convert_row_to_dict(existing_user, cursor.description)  # 转换字典
         logger.debug(f"existing_user: {existing_user}")
         if existing_user:
+            logger.error(f"STATUS: 400 ERROR: The address already has NFT - {userid}")
+            return {"code": 400, "success": False, "msg": "The address already has NFT"}
+
+        # web3
+        web3_rpc_url = web3_config['server'] # rpc
+        if not web3_rpc_url:
+            raise Exception("Web3 rpc not found")
+        web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
+        if config_chainid in [56, 97]:
+            web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        # 连接rpc节点
+        if not web3_obj.is_connected():
+            logger.error(f"Unable to connect to the network: {web3_rpc_url}")
+            web3_rpc_url = web3_config['rpc']
+            web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
+            if config_chainid in [56, 97]:
+                web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            if not web3_obj.is_connected():
+                logger.error(f"Unable to connect to the network: {web3_rpc_url}")
+                time.sleep(10)
+                raise Exception(f"Ooops! Failed to eth.is_connected. {web3_rpc_url}")
+        # nftmint
+        nftmint_address = web3_config['nftmint']
+        if not (len(nftmint_address) == 42 and nftmint_address.startswith('0x')):
+            logger.error(f"Invalid nftmint_contract address - {nftmint_address}")
+            return {"code": 401, "success": False, "msg": "Invalid nftmint_contract address"}
+        nftmint_contract_address = Web3.to_checksum_address(nftmint_address)
+        nftmint_contract = web3_obj.eth.contract(address=nftmint_contract_address, abi=contract_abi_nftmint)
+        logger.info(f"nftmint_address: {nftmint_address} config_chainid: {config_chainid}")
+        ## 是否存在NFT
+        sender_address = Web3.to_checksum_address(address)
+        is_nft = nftmint_contract.functions.userPurchases( sender_address ).call()
+        logger.debug(f"is_nft: {is_nft}")
+        if is_nft > 0:
             logger.error(f"STATUS: 400 ERROR: The address already has NFT - {userid}")
             return {"code": 400, "success": False, "msg": "The address already has NFT"}
 

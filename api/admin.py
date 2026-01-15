@@ -9,6 +9,7 @@ from typing import Dict
 from fastapi import APIRouter, Depends, BackgroundTasks
 from pydantic import BaseModel, EmailStr, Field
 from web3 import Web3
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from config import APP_CONFIG, KAFKA_CONFIG, JWT_CONFIG, DB_ENGINE
 from utils.bearertoken import md58, create_access_token, decode_access_token
@@ -366,16 +367,24 @@ async def admin_airdrop_nft_hash(post_request: TxhashRequest, userid: Dict = Dep
             logger.success(f"Already stored. tx_hash: {tx_hash}")
             return {"code": 200, "success": False, "msg": "Already stored"}
 
+        # web3
         web3_rpc_url = web3_config['server'] # rpc
         if not web3_rpc_url:
-            logger.error(f"Web3 rpc not found")
-            return {"code": 400, "success": False, "msg": "Web3 rpc not found"}
             raise Exception("Web3 rpc not found")
         web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
+        if config_chainid in [56, 97]:
+            web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         # 连接rpc节点
         if not web3_obj.is_connected():
-            logger.error(f"STATUS: 400 ERROR: Failed to connect to node | tx_hash: {tx_hash}")
-            return {"code": 400, "success": False, "msg": "Failed to connect to node"}
+            logger.error(f"Unable to connect to the network: {web3_rpc_url}")
+            web3_rpc_url = web3_config['rpc']
+            web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
+            if config_chainid in [56, 97]:
+                web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            if not web3_obj.is_connected():
+                logger.error(f"Unable to connect to the network: {web3_rpc_url}")
+                time.sleep(10)
+                raise Exception(f"Ooops! Failed to eth.is_connected. {web3_rpc_url}")
         
         logger.info(f"tx_hash: {tx_hash}")
 
