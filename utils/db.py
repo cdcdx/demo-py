@@ -854,7 +854,7 @@ def format_query_for_db(query: str) -> str:
         query = re.sub(r'unix_timestamp\(([^)]+)\)', r'strftime(\1)', query)
         
         # 处理 COLLATE utf8mb4_general_ci 语法
-        query = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s+COLLATE\s+utf8mb4_general_ci\s+=\s+(%s)', r'LOWER(\1) = LOWER(\2)', query, flags=re.IGNORECASE)
+        query = re.sub(r'COLLATE\s+utf8mb4_general_ci', 'COLLATE NOCASE', query, flags=re.IGNORECASE)
         
         return query
     elif DB_ENGINE == "postgresql": # 将 %s 替换为 $1, $2, $3...

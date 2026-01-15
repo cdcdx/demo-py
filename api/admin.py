@@ -349,7 +349,7 @@ async def admin_airdrop_nft_hash(post_request: TxhashRequest, userid: Dict = Dep
         await set_redis_data(f"pending:{tx_hash}:admin:mintnft", value=1, ex=60)
 
         # 查询 boxnft 是否入库
-        check_query = "SELECT id FROM wenda_nft_onchain WHERE tx_hash = %s and status=1"
+        check_query = "SELECT id FROM wenda_nft_onchain WHERE tx_hash=%s and status=1"
         values = (tx_hash.lower())
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")

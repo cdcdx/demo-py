@@ -877,7 +877,7 @@ async def send_verifyemail(background_tasks: BackgroundTasks, userid: Dict = Dep
         await set_redis_data(f"pending:{userid}:send:verifyemail", value=1, ex=60)
 
         ## 根据 userid 查询是否已验证
-        check_query = "SELECT email,username,password,state FROM wenda_users WHERE userid = %s"
+        check_query = "SELECT email,username,password,state FROM wenda_users WHERE userid=%s"
         values = (userid,)
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
@@ -1056,7 +1056,7 @@ async def address_mintnft_B0(chainid:int, background_tasks: BackgroundTasks, use
         await set_redis_data(f"pending:{userid}:mintnft", value=1, ex=600)
 
         # Check if the userid already exists
-        check_query = " SELECT address FROM wenda_users WHERE userid = %s "
+        check_query = " SELECT address FROM wenda_users WHERE userid=%s "
         values = (userid,)
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
@@ -1077,7 +1077,7 @@ async def address_mintnft_B0(chainid:int, background_tasks: BackgroundTasks, use
         
         ## 查询NFT持有状态
         # Check if the address already exists
-        check_query = " SELECT id FROM wenda_nft_onchain WHERE tx_chainid = %s and tx_address COLLATE utf8mb4_general_ci = %s AND status=1 order by id desc limit 1 "
+        check_query = " SELECT id FROM wenda_nft_onchain WHERE tx_chainid=%s and tx_address COLLATE utf8mb4_general_ci=%s AND status=1 order by id desc limit 1 "
         values = (chainid, address)
         check_query = format_query_for_db(check_query)
         logger.debug(f"check_query: {check_query} values: {values}")
@@ -1171,7 +1171,7 @@ async def referral_history(page: int | None = 1, limit: int | None = 10, userid:
                             SELECT 
                                 COUNT(DISTINCT tx_hash) as len
                             FROM wenda_nft_onchain 
-                            WHERE par_address COLLATE utf8mb4_general_ci = %s AND status=1 AND nft_boxid>0
+                            WHERE par_address COLLATE utf8mb4_general_ci=%s AND status=1 AND nft_boxid>0
                             """
             values = (address,)
             check_query = format_query_for_db(check_query)
@@ -1211,7 +1211,7 @@ async def referral_history(page: int | None = 1, limit: int | None = 10, userid:
                                 ROUND(SUM(tx_amount_sxp),6) as amount_sxp,
                                 COUNT(tx_hash) as count
                             FROM wenda_nft_onchain 
-                            WHERE par_address COLLATE utf8mb4_general_ci = %s AND status=1 AND nft_boxid>0
+                            WHERE par_address COLLATE utf8mb4_general_ci=%s AND status=1 AND nft_boxid>0
                             GROUP BY tx_hash
                             ORDER BY date DESC
                             LIMIT %s, %s

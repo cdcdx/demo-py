@@ -327,7 +327,7 @@ async def listen_events_start(web3_config, hash_index):
                     
                     # # 更新邀请码
                     # update_query = """
-                    #                 UPDATE wenda_users SET referral_code=%s, updated_time=NOW() WHERE address COLLATE utf8mb4_general_ci = %s AND referral_code=''
+                    #                 UPDATE wenda_users SET referral_code=%s, updated_time=NOW() WHERE address COLLATE utf8mb4_general_ci=%s AND referral_code=''
                     #                 """
                     # values = (referral_code, nft_buyer)
                     # update_query = format_query_for_db(update_query)
