@@ -63,6 +63,11 @@ if [ -n "$SSL_CERTFILE" ] && [ -f "$SSL_CERTFILE" ] && [ -n "$SSL_KEYFILE" ] && 
 fi
 
 export PROCESS_MAIN='main.py'
+export PROCESS_KAFKA='app-kafka.py'
+export PROCESS_NFTEVENT='web3-nft_event.py'
+export LOG_MAIN='log-main.log'
+export LOG_KAFKA='log-kafka.log'
+export LOG_NFTEVENT='log-nft_event.log'
 
 # 设置文件描述符限制
 ulimit -n 204800
@@ -96,9 +101,87 @@ case "$1" in
         find . -type d -name "__pycache__" -exec rm -rf {} +
         ;;
         
+    "kafka") # app-kafka.py
+        if [ "$2" == "log" ]; then
+            tail -f $LOG_KAFKA
+        elif [ "$2" == "kill" ]; then
+            check_process_id $PROCESS_KAFKA
+            if [ $pid -gt 1 ]; then
+                # tips
+                echo -e "\033[34m kill -9 $pid \033[0m"
+                kill -9 $pid
+            else
+                # tips
+                echo -e "\033[31m $PROCESS_KAFKA is not exist. \033[0m"
+            fi
+            echo ""
+        elif [ "$2" == "run" ]; then # 直接运行 kafka
+            check_process_id $PROCESS_KAFKA
+            if [ $pid -eq 0 ]; then
+                echo "Virtual Environment Activation..."
+                source .venv/bin/activate
+                echo "Launching $PROCESS_KAFKA ..."
+                python3 $PROCESS_KAFKA ${@:3}
+            else
+                # tips
+                echo -e "\033[31m $PROCESS_KAFKA is exist. \033[0m"
+            fi
+        else # 后台运行 kafka
+            check_process_id $PROCESS_KAFKA
+            if [ $pid -eq 0 ]; then
+                echo "Virtual Environment Activation..."
+                source .venv/bin/activate
+                echo "Launching $PROCESS_KAFKA ..."
+                nohup python3 $PROCESS_KAFKA ${@:2} > $LOG_KAFKA 2>&1 &
+            else
+                # tips
+                echo -e "\033[31m $PROCESS_KAFKA is exist. \033[0m"
+            fi
+        fi
+        ;;
+        
+    "nft") # web3-nft_event.py
+        if [ "$2" == "log" ]; then
+            tail -f $LOG_NFTEVENT
+        elif [ "$2" == "kill" ]; then
+            check_process_id $PROCESS_NFTEVENT
+            if [ $pid -gt 1 ]; then
+                # tips
+                echo -e "\033[34m kill -9 $pid \033[0m"
+                kill -9 $pid
+            else
+                # tips
+                echo -e "\033[31m $PROCESS_NFTEVENT is not exist. \033[0m"
+            fi
+            echo ""
+        elif [ "$2" == "run" ]; then # 直接运行 nft_event
+            check_process_id $PROCESS_NFTEVENT
+            if [ $pid -eq 0 ]; then
+                echo "Virtual Environment Activation..."
+                source .venv/bin/activate
+                echo "Launching $PROCESS_NFTEVENT ..."
+                python3 $PROCESS_NFTEVENT ${@:3}
+            else
+                # tips
+                echo -e "\033[31m $PROCESS_NFTEVENT is exist. \033[0m"
+            fi
+        else # 后台运行 nft_event
+            check_process_id $PROCESS_NFTEVENT
+            if [ $pid -eq 0 ]; then
+                echo "Virtual Environment Activation..."
+                source .venv/bin/activate
+                echo "Launching $PROCESS_NFTEVENT ..."
+                nohup python3 $PROCESS_NFTEVENT ${@:2} > $LOG_NFTEVENT 2>&1 &
+            else
+                # tips
+                echo -e "\033[31m $PROCESS_NFTEVENT is exist. \033[0m"
+            fi
+        fi
+        ;;
+        
     "log")
-        # 查看日志
-        tail -f log-main.log
+        # 查看主程序日志
+        tail -f $LOG_MAIN
         ;;
         
     "kill")
@@ -133,8 +216,7 @@ case "$1" in
         echo ""
         ;;
         
-    "run")
-        # 直接运行（非后台）
+    "run") # 直接运行
         check_port $UVICORN_PORT
         if [ $pid -eq 0 ]; then
             echo "Virtual Environment Activation..."
@@ -146,14 +228,13 @@ case "$1" in
         fi
         ;;
         
-    *)
-        # 默认后台运行
+    *) # 后台运行
         check_port $UVICORN_PORT
         if [ $pid -eq 0 ]; then
             echo "Virtual Environment Activation..."
             source .venv/bin/activate
             echo "Launching $PROCESS_MAIN ..."
-            nohup python3 $PROCESS_MAIN $@ > log-main.log 2>&1 &
+            nohup python3 $PROCESS_MAIN $@ > $LOG_MAIN 2>&1 &
         else
             echo -e "\033[31m Port: $UVICORN_PORT is exist. \033[0m"
         fi

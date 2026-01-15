@@ -44,7 +44,6 @@ async def kafka_consume_mail():
     topics = [KAFKA_TOPIC + 'mail']
     consumer = None
     while True:
-        logger.debug(f"kafka_consume_mail KAFKA_BOOTSTRAP_SERVERS: {KAFKA_BOOTSTRAP_SERVERS}")
         try:
             if consumer is None:
                 logger.debug(f"kafka_consume_mail KAFKA_BOOTSTRAP_SERVERS: {KAFKA_BOOTSTRAP_SERVERS}")
@@ -56,6 +55,7 @@ async def kafka_consume_mail():
                                     # max_poll_interval_ms=86400000,
                                     group_id=KAFKA_CONSUMER_GROUP,
                                     bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
+
             # get cluster layout and join group KAFKA_CONSUMER_GROUP
             await consumer.start()
 
@@ -106,8 +106,9 @@ async def kafka_consume_mail():
 async def kafka_consume_mintnft():
     topics = [KAFKA_TOPIC + 'mintnft']
     while True:
-        logger.debug(f"kafka_consume_mintnft KAFKA_BOOTSTRAP_SERVERS: {KAFKA_BOOTSTRAP_SERVERS}")
-        consumer = AIOKafkaConsumer(*topics,
+        try:
+            logger.debug(f"kafka_consume_mintnft KAFKA_BOOTSTRAP_SERVERS: {KAFKA_BOOTSTRAP_SERVERS}")
+            consumer = AIOKafkaConsumer(*topics,
                                     loop=asyncio.get_event_loop(),
                                     session_timeout_ms=30000,  # 30s
                                     heartbeat_interval_ms=10000,
@@ -116,7 +117,7 @@ async def kafka_consume_mintnft():
                                     group_id=KAFKA_CONSUMER_GROUP,
                                     bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
                                     )
-        try:
+
             # get cluster layout and join group KAFKA_CONSUMER_GROUP
             await consumer.start()
 
