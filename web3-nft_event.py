@@ -171,8 +171,6 @@ async def listen_events_start(web3_config, hash_index):
 
     config_network = web3_config['network'] # network
     config_chainid = web3_config['chain_id'] # chain_id
-    if not config_chainid:
-        raise Exception("Web3 chain_id not found")
 
     web3_rpc_url = web3_config['server'] # rpc
     if not web3_rpc_url:
@@ -374,10 +372,16 @@ async def listen_events(chainid):
 
     web3_config = get_web3_config_by_chainid(chainid)
     logger.debug(f"web3_config: {web3_config}")
-
+    if not web3_config:
+        logger.error(f"STATUS: 400 ERROR: Web3 config not found - chainid: {chainid}")
+        raise Exception("Web3 config not found")
     config_chainid = web3_config['chain_id'] # chain_id
     if not config_chainid:
+        logger.error(f"STATUS: 400 ERROR: Web3 chain_id not found - chainid: {chainid}")
         raise Exception("Web3 chain_id not found")
+    if config_chainid != chainid:
+        logger.error(f"STATUS: 400 ERROR: Web3 chainid does not match - chainid: {chainid} != config_chainid: {config_chainid}")
+        raise Exception("Web3 chainid does not match")
 
     hash_file=f"{config_chainid}_boxnft"
 
@@ -385,7 +389,7 @@ async def listen_events(chainid):
     if not web3_rpc_url:
         raise Exception("Web3 rpc not found")
     web3_obj = Web3(Web3.HTTPProvider(web3_rpc_url))
-    if chainid in [56, 97]:
+    if chainid in [1, 11155111, 8453, 84532, 56, 97]:
         web3_obj.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     while not web3_is_connected_with_retry(web3_obj):
         logger.debug(f"Ooops! Failed to eth.is_connected. {web3_rpc_url}")

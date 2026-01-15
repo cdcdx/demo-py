@@ -320,23 +320,27 @@ async def admin_airdrop_nft_hash(post_request: TxhashRequest, userid: Dict = Dep
             return {"code": 400, "success": False, "msg": "Invalid tx_hash"}
             raise Exception("Invalid tx_hash")
 
-        tx_chainid = post_request.tx_chainid
-        if tx_chainid not in [8453, 84532]:
-            logger.error(f"STATUS: 400 ERROR: Invalid tx_chainid - {tx_chainid}")
-            return {"code": 400, "success": False, "msg": "Invalid tx_chainid"}
-            raise Exception("tx_chainid not found")
-
         current_timestamp = int(time.time())
         logger.debug(f"current_timestamp: {current_timestamp}")
 
-        web3_config = get_web3_config_by_chainid(tx_chainid)
-        # logger.debug(f"web3_config: {web3_config}")
+        # 校验chainid
+        chainid = post_request.tx_chainid
+        if chainid not in [1, 11155111, 8453, 84532, 56, 97]:
+            logger.error(f"STATUS: 400 ERROR: Invalid chainid - {chainid}")
+            return {"code": 400, "success": False, "msg": "Invalid chainid"}
 
+        web3_config = get_web3_config_by_chainid(chainid)
+        # logger.debug(f"web3_config: {web3_config}")
+        if not web3_config:
+            logger.error(f"STATUS: 400 ERROR: Web3 config not found - chainid: {chainid}")
+            raise Exception("Web3 config not found")
         config_chainid = web3_config['chain_id'] # chain_id
         if not config_chainid:
-            logger.error(f"STATUS: 400 ERROR: Web3 chain_id not found | tx_chainid: {tx_chainid}")
-            return {"code": 400, "success": False, "msg": "Web3 chain_id not found"}
+            logger.error(f"STATUS: 400 ERROR: Web3 chain_id not found - chainid: {chainid}")
             raise Exception("Web3 chain_id not found")
+        if config_chainid != chainid:
+            logger.error(f"STATUS: 400 ERROR: Web3 chainid does not match - chainid: {chainid} != config_chainid: {config_chainid}")
+            raise Exception("Web3 chainid does not match")
 
         nft_address = web3_config['nft'].lower() # NFT合约地址
         nftmint_address = web3_config['nftmint'].lower() # NFT购买合约地址

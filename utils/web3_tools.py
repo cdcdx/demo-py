@@ -12,7 +12,7 @@ from config import WEB3_NETWORK, WEB3_CONFIG, WEB3_WHITE_PRIKEY
 # ---------------------------------------
 
 def get_web3_config_by_chainid(chainid):
-    assert chainid in [1, 8453, 84532, 56, 97]
+    assert chainid in [1, 11155111, 8453, 84532, 56, 97]
     web3_configs = json.loads(WEB3_CONFIG)
     for web3_client in web3_configs:
         if chainid>0:
@@ -172,11 +172,16 @@ def build_base_transaction(web3_obj, sender_address, config_chainid):
 def get_web3_client(chainid):
     """获取web3客户端和配置"""
     web3_config = get_web3_config_by_chainid(chainid)
+    # logger.debug(f"web3_config: {web3_config}")
     if not web3_config:
+        logger.error(f"STATUS: 400 ERROR: Web3 config not found - chainid: {chainid}")
         raise Exception("Web3 config not found")
-    
     config_chainid = web3_config['chain_id']
-    if chainid != config_chainid:
+    if not config_chainid:
+        logger.error(f"STATUS: 400 ERROR: Web3 chain_id not found - chainid: {chainid}")
+        raise Exception("Web3 chain_id not found")
+    if config_chainid != chainid:
+        logger.error(f"STATUS: 400 ERROR: Web3 chainid does not match - chainid: {chainid} != config_chainid: {config_chainid}")
         raise Exception("Web3 chainid does not match")
     
     web3_rpc_url = web3_config['server']
@@ -230,7 +235,8 @@ def decode_revert_reason(hex_error):
 def contract_nftmint(receiver_address, chainid=0):
     tx_bytes = None
     try:
-        if chainid not in [1, 8453, 84532, 56, 97]:
+        # 校验chainid
+        if chainid not in [1, 11155111, 8453, 84532, 56, 97]:
             raise Exception("chainid not found")
         
         web3_obj, web3_config = get_web3_client(chainid)

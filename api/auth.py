@@ -23,6 +23,7 @@ from utils.kafka.produce import kafka_send_produce
 from utils.mintnft import sync_nft_mintnft, async_nft_mintnft
 from utils.local import generate_userid, generate_registercode, hash_password, check_password, validate_password_strength, validate_email_format, verify_recaptcha_token
 from utils.security import get_current_userid, get_interface_userid
+from utils.web3_tools import make_request, get_web3_config_by_network, get_web3_config_by_chainid
 from utils.log import log as logger
 
 router = APIRouter()
@@ -1054,6 +1055,24 @@ async def address_mintnft_B0(chainid:int, background_tasks: BackgroundTasks, use
         if redis_pending:
             return {"code": 400, "success": False, "msg": "Please wait for the last completion"}
         await set_redis_data(f"pending:{userid}:mintnft", value=1, ex=600)
+
+        # 校验chainid
+        if chainid not in [1, 11155111, 8453, 84532, 56, 97]:
+            logger.error(f"STATUS: 400 ERROR: Invalid chainid - {chainid}")
+            return {"code": 400, "success": False, "msg": "Invalid chainid"}
+        
+        web3_config = get_web3_config_by_chainid(chainid)
+        # logger.debug(f"web3_config: {web3_config}")
+        if not web3_config:
+            logger.error(f"STATUS: 400 ERROR: Web3 config not found - chainid: {chainid}")
+            raise Exception("Web3 config not found")
+        config_chainid = web3_config['chain_id'] # chain_id
+        if not config_chainid:
+            logger.error(f"STATUS: 400 ERROR: Web3 chain_id not found - chainid: {chainid}")
+            raise Exception("Web3 chain_id not found")
+        if config_chainid != chainid:
+            logger.error(f"STATUS: 400 ERROR: Web3 chainid does not match - chainid: {chainid} != config_chainid: {config_chainid}")
+            raise Exception("Web3 chainid does not match")
 
         # Check if the userid already exists
         check_query = " SELECT address FROM wenda_users WHERE userid=%s "
