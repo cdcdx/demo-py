@@ -115,8 +115,8 @@ class SQLiteDatabase(Database):
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     userid              TEXT     DEFAULT '',
                     social_uuid         TEXT     DEFAULT '',
-                    social_type         TEXT     DEFAULT '',  -- authorize/follow/retweet
-                    social_action       TEXT     DEFAULT '',  -- '' or 0: - follow false / 1: follow true
+                    social_type         TEXT     DEFAULT '',
+                    social_action       TEXT     DEFAULT '',
                     social_id           TEXT     DEFAULT '',
                     social_name         TEXT     DEFAULT '',
                     social_global_name  TEXT     DEFAULT '',
@@ -131,7 +131,7 @@ class SQLiteDatabase(Database):
                     x_statuses_count    INTEGER  DEFAULT 0,
                     x_created_at        TEXT     DEFAULT '',
                     x_email             TEXT     DEFAULT '',
-                    status              INTEGER  DEFAULT 0,  -- 状态: 0 failed, 1 doing, 2 success
+                    status              INTEGER  DEFAULT 0,
                     created_time        DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_time        DATETIME DEFAULT NULL
                 );
@@ -143,14 +143,14 @@ class SQLiteDatabase(Database):
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     userid              TEXT     DEFAULT '',
                     social_uuid         TEXT     DEFAULT '',
-                    social_type         TEXT     DEFAULT '',  -- authorize/join
-                    social_action       TEXT     DEFAULT '',  -- '' or 0: - join false / 1: join true
+                    social_type         TEXT     DEFAULT '',
+                    social_action       TEXT     DEFAULT '',
                     social_id           TEXT     DEFAULT '',
                     social_name         TEXT     DEFAULT '',
                     social_global_name  TEXT     DEFAULT '',
                     social_avatar       TEXT     DEFAULT '',
                     social_locale       TEXT     DEFAULT '',
-                    status              INTEGER  DEFAULT 0,  -- 状态: 0 failed, 1 doing, 2 success
+                    status              INTEGER  DEFAULT 0,
                     created_time        DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_time        DATETIME DEFAULT NULL
                 );
@@ -161,8 +161,8 @@ class SQLiteDatabase(Database):
                 CREATE TABLE IF NOT EXISTS wenda_nft_onchain (
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     contract_address    TEXT     DEFAULT '',
-                    tx_chainid          INTEGER  DEFAULT 0,  -- chainid
-                    tx_blockid          INTEGER  DEFAULT 0,  -- blockid
+                    tx_chainid          INTEGER  DEFAULT 0,
+                    tx_blockid          INTEGER  DEFAULT 0,
                     tx_hash             TEXT     DEFAULT '',
                     tx_date             TEXT     DEFAULT '',
                     tx_amount_sxp       float    DEFAULT 0.0,
@@ -175,7 +175,7 @@ class SQLiteDatabase(Database):
                     nft_id              INTEGER  DEFAULT 0,
                     nft_boxid           INTEGER  DEFAULT 0,
                     nft_timestamp       INTEGER  DEFAULT 0,
-                    status              TINYINT  DEFAULT 0,  -- -1 failed, 0 pending, 1 mint, 2 addkol
+                    status              TINYINT  DEFAULT 0,
                     note                TEXT     DEFAULT '',
                     created_time        DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_time        DATETIME DEFAULT NULL

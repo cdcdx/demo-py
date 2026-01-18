@@ -101,6 +101,15 @@ case "$1" in
         find . -type d -name "__pycache__" -exec rm -rf {} +
         ;;
         
+    "sqlite") # sqlite-web
+        echo "Starting sqlite-web"
+        docker run -it --rm -p 18080:8080 \
+            -v "$(pwd):/data" \
+            --name sqlite-web \
+            ghcr.io/coleifer/sqlite-web:latest \
+            appdb.sqlite
+        ;;
+        
     "kafka") # app-kafka.py
         if [ "$2" == "log" ]; then
             tail -f $LOG_KAFKA

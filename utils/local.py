@@ -7,14 +7,14 @@ import time
 import math
 import string
 import random
+import bcrypt
+import platform
 import asyncio
 import hashlib
-import platform
 import subprocess
 import shlex
 import shutil
 import ssl
-import bcrypt
 from zlib import crc32
 from pathlib import Path
 from datetime import timedelta
