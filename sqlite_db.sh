@@ -23,23 +23,23 @@ log_warn() {
 # 显示帮助信息
 show_help() {
     cat << EOF
-Usage: $SCRIPT_NAME {init|run|backup|stop} [instance_number]
-
-Commands:
-  init                    Initialize the database directory and pull Docker image
-  run [instance]          Run SQLite Web UI (default instance: 0)
-  backup [instance]       Backup database (default instance: 0)
-  stop [instance]         Stop running container (default instance: 0)
-
-Options:
-  -h, --help              Show this help message
-
-Examples:
-  $SCRIPT_NAME init                 Initialize environment
-  $SCRIPT_NAME run                  Run on port 8080 with default DB
-  $SCRIPT_NAME run 1                Run on port 8081 with $DEFAULT_DB.1
-  $SCRIPT_NAME backup 2             Backup $DEFAULT_DB.2 database
-  $SCRIPT_NAME stop 1               Stop instance 1 container
+  Usage: $SCRIPT_NAME {init|run|backup|stop} [instance]
+  
+  Commands:
+    init                    Initialize the database directory and pull Docker image
+    run [instance]          Run SQLite Web UI (default instance: 0)
+    stop [instance]         Stop running container (default instance: 0)
+    backup [instance]       Backup database (default instance: 0)
+  
+  Options:
+    -h, --help              Show this help message
+  
+  Examples:
+    $SCRIPT_NAME init                 Initialize environment
+    $SCRIPT_NAME run                  Run on port ${DEFAULT_PORT} with $DEFAULT_DB
+    $SCRIPT_NAME run 1                Run on port $((DEFAULT_PORT+1)) with $DEFAULT_DB.1
+    $SCRIPT_NAME stop 1               Stop ${DEFAULT_DB%%.*}_1 container
+    $SCRIPT_NAME backup 2             Backup $DEFAULT_DB.2 database
 EOF
 }
 
@@ -143,7 +143,7 @@ start_backup_db() {
     
     # 验证实例号是否有效
     if [[ ! "$instance" =~ ^[0-9]+$ ]]; then
-        log_error "Instance number must be a non-negative integer"
+        log_error "Instance must be a non-negative integer"
         exit 1
     fi    
     # # 验证数据库文件名是否安全
@@ -199,7 +199,7 @@ start_sqlite_webui() {
     
     # 验证实例号是否有效
     if [[ ! "$instance" =~ ^[0-9]+$ ]]; then
-        log_error "Instance number must be a non-negative integer"
+        log_error "Instance must be a non-negative integer"
         exit 1
     fi
     
@@ -264,7 +264,7 @@ stop_container() {
     
     # 验证实例号是否有效
     if [[ ! "$instance" =~ ^[0-9]+$ ]]; then
-        log_error "Instance number must be a non-negative integer"
+        log_error "Instance must be a non-negative integer"
         exit 1
     fi
     
@@ -309,7 +309,7 @@ main() {
     # 验证实例号为数字（仅对需要实例号的命令）
     if [[ "$command" == "backup" || "$command" == "run" || "$command" == "stop" ]]; then
         if [ ! -z "$2" ] && [[ ! "$2" =~ ^[0-9]+$ ]]; then
-            log_error "Instance number must be a non-negative integer"
+            log_error "Instance must be a non-negative integer"
             show_help
             exit 1
         fi
