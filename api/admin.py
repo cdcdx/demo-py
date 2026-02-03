@@ -140,7 +140,7 @@ async def admin_registercode_generate(userid: Dict = Depends(get_interface_useri
             "msg": "Success",
             "data": {
                 "code": register_code,
-                'url': f'{APP_CONFIG["appbase"]}/register?code={register_code}'
+                'url': f'{APP_CONFIG["appadmin"]}/register?code={register_code}'
             },
         }
     except Exception as e:
@@ -207,7 +207,7 @@ async def admin_registercode_list(page: int | None = 1, limit: int | None = 10, 
         # 添加url
         if register_list:
             for register_one in register_list:
-                register_one['url'] = f'{APP_CONFIG["appbase"]}/register?code={register_one["code"]}'
+                register_one['url'] = f'{APP_CONFIG["appadmin"]}/register?code={register_one["code"]}'
         
         return {
             "code": 200,
@@ -278,7 +278,7 @@ async def admin_registercode_history(page: int | None = 1, limit: int | None = 1
         # 添加url
         if register_list:
             for register_one in register_list:
-                register_one['url'] = f'{APP_CONFIG["appbase"]}/register?code={register_one["code"]}'
+                register_one['url'] = f'{APP_CONFIG["appadmin"]}/register?code={register_one["code"]}'
         
         return {
             "code": 200,

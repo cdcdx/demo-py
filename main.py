@@ -20,9 +20,13 @@ from config import *
 parser = argparse.ArgumentParser()
 parser.add_argument('-d', '--debug', type=bool, default=False, action=argparse.BooleanOptionalAction)
 parser.add_argument('-l', '--log', type=str, default="warning")
+parser.add_argument('-p', '--port', type=int, default=0)
+parser.add_argument('-r', '--run', type=int, default=0)
 args = parser.parse_args()
 run_debug = bool(args.debug)
 run_log = str(args.log.lower())
+run_port = int(args.port)
+run_run = int(args.run)
 if run_debug:
     run_log = "DEBUG"
 # print(f"log level: {run_log}")
@@ -93,18 +97,22 @@ if __name__ == "__main__":
         logger.info(f"SSL enabled - Cert: {SSL_CERTFILE}, Key: {SSL_KEYFILE}")
     else:
         logger.info("SSL disabled - Cert or key file not found")
-    
-    # 根据是否调试模式确定工作进程数
-    cpu_count = 1 if run_debug else max(1, os.cpu_count() or 1)
-    logger.info(f"cpu_count: {cpu_count}")
+
+    # 工作进程数
+    if run_run>0:
+        worker_count = run_run
+    else:
+        worker_count = 1 if run_debug else os.cpu_count() or 1
+    print(f"worker_count: {worker_count}")
+    worker_port = run_port if run_port > 0 else UVICORN_PORT
 
     try:
         uvicorn.run(
                 app="main:app",
                 host=UVICORN_HOST,
-                port=UVICORN_PORT,
+                port=worker_port,
                 reload=run_debug,
-                workers=1,  # 禁用多进程
+                workers=worker_count,
                 limit_concurrency=2000,
                 ssl_keyfile=SSL_KEYFILE if SSL_KEYFILE else None,
                 ssl_certfile=SSL_CERTFILE if SSL_CERTFILE else None,

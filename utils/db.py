@@ -10,14 +10,12 @@ from decimal import Decimal
 from contextlib import asynccontextmanager
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator
-from loguru import logger
 # from fastapi import HTTPException
+from loguru import logger
 
-from config import DB_ENGINE, SQLITE_URL, MYSQL_URL, DB_MAXCONNECT, POSTGRESQL_URL, BASE_DIR
+from config import BASE_DIR, DB_ENGINE, SQLITE_URL, MYSQL_URL, DB_MAXCONNECT, POSTGRESQL_URL
 
 class Database(ABC):
-    """数据库抽象基类"""
-
     def __init__(self, url: str):
         self.url = url
         self.pool = None
@@ -78,7 +76,7 @@ class SQLiteDatabase(Database):
             conn = await aiosqlite.connect(self.url, uri=True)
         
         try:
-            # 创建用户表
+            # 创建表 wenda_users
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS wenda_users (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,14 +107,14 @@ class SQLiteDatabase(Database):
                     (3, 'ZD3JU', 'psh001@qq.com', '1040492267738', 'psh001', '$2b$12$hnJh2jqkn2etSAjhq19saORj0z5NiwE4znZTp6c5y/H4cOB1B5Yku', 'VERIFIED', '2025-07-11 07:28:39');
                 """)
             
-            # 创建社交用户表 x
+            # 创建表 wenda_users_social_x
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS wenda_users_social_x (
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     userid              TEXT     DEFAULT '',
                     social_uuid         TEXT     DEFAULT '',
-                    social_type         TEXT     DEFAULT '',  -- authorize/follow/retweet
-                    social_action       TEXT     DEFAULT '',  -- '' or 0: - follow false / 1: follow true
+                    social_type         TEXT     DEFAULT '',
+                    social_action       TEXT     DEFAULT '',
                     social_id           TEXT     DEFAULT '',
                     social_name         TEXT     DEFAULT '',
                     social_global_name  TEXT     DEFAULT '',
@@ -131,38 +129,38 @@ class SQLiteDatabase(Database):
                     x_statuses_count    INTEGER  DEFAULT 0,
                     x_created_at        TEXT     DEFAULT '',
                     x_email             TEXT     DEFAULT '',
-                    status              INTEGER  DEFAULT 0,  -- 状态: 0 failed, 1 doing, 2 success
+                    status              INTEGER  DEFAULT 0,
                     created_time        DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_time        DATETIME DEFAULT NULL
                 );
             """)
             
-            # 创建社交用户表 dc
+            # 创建表 wenda_users_social_dc
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS wenda_users_social_dc (
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     userid              TEXT     DEFAULT '',
                     social_uuid         TEXT     DEFAULT '',
-                    social_type         TEXT     DEFAULT '',  -- authorize/join
-                    social_action       TEXT     DEFAULT '',  -- '' or 0: - join false / 1: join true
+                    social_type         TEXT     DEFAULT '',
+                    social_action       TEXT     DEFAULT '',
                     social_id           TEXT     DEFAULT '',
                     social_name         TEXT     DEFAULT '',
                     social_global_name  TEXT     DEFAULT '',
                     social_avatar       TEXT     DEFAULT '',
                     social_locale       TEXT     DEFAULT '',
-                    status              INTEGER  DEFAULT 0,  -- 状态: 0 failed, 1 doing, 2 success
+                    status              INTEGER  DEFAULT 0,
                     created_time        DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_time        DATETIME DEFAULT NULL
                 );
             """)
             
-            # 创建NFT表
+            # 创建表 wenda_nft_onchain
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS wenda_nft_onchain (
                     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
                     contract_address    TEXT     DEFAULT '',
-                    tx_chainid          INTEGER  DEFAULT 0,  -- chainid
-                    tx_blockid          INTEGER  DEFAULT 0,  -- blockid
+                    tx_chainid          INTEGER  DEFAULT 0,
+                    tx_blockid          INTEGER  DEFAULT 0,
                     tx_hash             TEXT     DEFAULT '',
                     tx_date             TEXT     DEFAULT '',
                     tx_amount_sxp       float    DEFAULT 0.0,
@@ -175,7 +173,7 @@ class SQLiteDatabase(Database):
                     nft_id              INTEGER  DEFAULT 0,
                     nft_boxid           INTEGER  DEFAULT 0,
                     nft_timestamp       INTEGER  DEFAULT 0,
-                    status              TINYINT  DEFAULT 0,  -- -1 failed, 0 pending, 1 mint, 2 addkol
+                    status              TINYINT  DEFAULT 0,
                     note                TEXT     DEFAULT '',
                     created_time        DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_time        DATETIME DEFAULT NULL
@@ -232,7 +230,7 @@ class MySQLDatabase(Database):
                 maxsize=DB_MAXCONNECT
             )
             if self.pool:
-                logger.info("Connected to PostgreSQL database")
+                logger.info("Connected to MySQL database")
                 # 连接成功后检查并创建表
                 await self.create_tables()
         except aiomysql.Error as e:
@@ -275,7 +273,6 @@ class MySQLDatabase(Database):
                     await conn.commit()
         except aiomysql.Error as e:
             logger.error(f"Failed to create MySQL database: {e}")
-            # return False
             raise
             raise HTTPException(status_code=500, detail="Failed to create database")
 

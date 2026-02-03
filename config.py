@@ -179,7 +179,6 @@ MYSQL_URL = os.getenv('MYSQL_URL', default='')
 DB_MAXCONNECT = int(os.getenv('DB_MAXCONNECT', default=100))
 POSTGRESQL_URL = os.getenv('POSTGRESQL_URL', default='')
 
-
 # REDIS配置
 REDIS_MODE = os.getenv('REDIS_MODE', default='standalone')
 REDIS_ADDRESS = os.getenv('REDIS_ADDRESS', default='127.0.0.1:6379')

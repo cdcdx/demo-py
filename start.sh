@@ -1,11 +1,11 @@
 #!/bin/bash
+if [ -n "$VIRTUAL_ENV" ]; then
+    if type deactivate >/dev/null 2>&1; then
+        deactivate || true
+    fi
+fi
 
 set -e  # 遇到错误时退出
-
-# 如果在虚拟环境中，则先退出
-if [ -n "${VIRTUAL_ENV}" ]; then
-    deactivate
-fi
 
 # 检查进程ID的函数
 check_process_id() {
@@ -99,6 +99,15 @@ case "$1" in
     "clear")
         # 清理缓存文件
         find . -type d -name "__pycache__" -exec rm -rf {} +
+        ;;
+        
+    "sqlite") # sqlite-web
+        echo "Starting sqlite-web"
+        docker run -it --rm -p 18080:8080 \
+            -v "$(pwd):/data" \
+            --name sqlite-web \
+            ghcr.io/coleifer/sqlite-web:latest \
+            appdb.sqlite
         ;;
         
     "kafka") # app-kafka.py
